@@ -158,7 +158,7 @@ void QwenTtsClient::onTextMessageReceived(const QString& message) {
                 samples[i] = static_cast<qint16>(qBound<qint32>(-32768, v, 32767));
             }
         }
-        pendingPcm.append(pcm);
+        pendingPcm.append(convertPcm(pcm));
         openAudio();
         if (!pumpTimer.isActive()) pumpTimer.start();
         return;
@@ -219,17 +219,93 @@ void QwenTtsClient::openAudio() {
         emit failed(QStringLiteral("未找到可用的音频输出设备"));
         return;
     }
-    if (!dev.isFormatSupported(audioFormat)) {
-        emit failed(QStringLiteral("音频设备不支持 24kHz/16bit/单声道 PCM 输出"));
-        return;
+
+    // API 固定输出 24kHz/单声道 PCM，本地负责转换。
+    // 优先用设备首选格式（统一为 16bit），严格检查不过再按常见组合探测，
+    // 避免部分声卡/驱动拒绝 24kHz 或单声道格式导致无法播放。
+    QAudioFormat f = dev.preferredFormat();
+    f.setSampleFormat(QAudioFormat::Int16);
+    if (!dev.isFormatSupported(f)) {
+        bool ok = false;
+        const int rates[] = { 48000, 44100, 24000, 22050, 16000 };
+        const int channelCounts[] = { 2, 1 };
+        for (int ch : channelCounts) {
+            for (int r : rates) {
+                QAudioFormat t;
+                t.setSampleRate(r);
+                t.setChannelCount(ch);
+                t.setSampleFormat(QAudioFormat::Int16);
+                if (dev.isFormatSupported(t)) {
+                    f = t;
+                    ok = true;
+                    break;
+                }
+            }
+            if (ok) break;
+        }
+        if (!ok) {
+            emit failed(QStringLiteral("无法找到音频设备支持的输出格式"));
+            return;
+        }
     }
+
+    audioFormat = f;
+    targetRate = f.sampleRate();
+    targetChannels = f.channelCount();
     sink = new QAudioSink(dev, audioFormat, this);
-    sink->setBufferSize(19200);   // 0.4s @ 24kHz/16bit/mono
+    sink->setBufferSize(targetRate * targetChannels * 4 / 5);   // 0.4s 缓冲（16bit）
     audioIo = sink->start();
     if (!audioIo) {
         emit failed(QStringLiteral("音频设备启动失败"));
         closeAudio();
     }
+}
+
+/**
+ * @brief 将 API 输出的 24kHz/单声道 Int16 PCM 转换为音频设备支持的格式
+ * 线性插值重采样 + 单声道复制，语音场景质量足够
+ */
+QByteArray QwenTtsClient::convertPcm(const QByteArray& pcm) {
+    if (pcm.isEmpty()) return pcm;
+    if (targetRate == kSampleRate && targetChannels == 1) return pcm;
+
+    const qint16* src = reinterpret_cast<const qint16*>(pcm.constData());
+    const int srcN = pcm.size() / 2;
+    if (srcN <= 0) return QByteArray();
+
+    // 1) 重采样 24kHz → targetRate（线性插值）
+    QByteArray mono;
+    const qint16* monoData = src;
+    int monoN = srcN;
+    if (targetRate != kSampleRate) {
+        const int dstN = int((qint64)srcN * targetRate / kSampleRate);
+        if (dstN <= 0) return QByteArray();
+        mono.resize(dstN * 2);
+        qint16* dst = reinterpret_cast<qint16*>(mono.data());
+        for (int i = 0; i < dstN; ++i) {
+            const double pos = double(i) * kSampleRate / targetRate;
+            int i0 = int(pos);
+            if (i0 > srcN - 1) i0 = srcN - 1;
+            const int i1 = qMin(i0 + 1, srcN - 1);
+            const double frac = pos - i0;
+            const double s = src[i0] + (src[i1] - src[i0]) * frac;
+            dst[i] = static_cast<qint16>(int(qBound(-32768.0, s, 32767.0)));
+        }
+        monoData = reinterpret_cast<const qint16*>(mono.constData());
+        monoN = dstN;
+    }
+
+    if (targetChannels == 1) return mono.isEmpty() ? pcm : mono;
+
+    // 2) 单声道 → 多声道复制
+    QByteArray out;
+    out.resize(monoN * 2 * targetChannels);
+    qint16* o = reinterpret_cast<qint16*>(out.data());
+    for (int i = 0; i < monoN; ++i) {
+        for (int c = 0; c < targetChannels; ++c)
+            o[i * targetChannels + c] = monoData[i];
+    }
+    return out;
 }
 
 void QwenTtsClient::closeAudio() {
