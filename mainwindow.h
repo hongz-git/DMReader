@@ -55,6 +55,7 @@ private slots:
     void onAlwaysOnTopToggled(bool checked);
     void onOpacityChanged(int value);
     void onEngineChanged(int index);
+    void onQwenModelChanged(int index);
     void saveConfig();
     void loadConfig();
 
@@ -66,10 +67,12 @@ private:
     QListWidget* danmuList;   // 合并展示弹幕与日志的记录视图
     QComboBox* roomCombo;
     QComboBox* engineCombo;
+    QComboBox* modelCombo;
     QComboBox* voiceCombo;
     QComboBox* qwenVoiceCombo;
     QLineEdit* apiKeyInput;
     QLabel* systemVoiceLabel;
+    QLabel* qwenModelLabel;
     QLabel* qwenVoiceLabel;
     QLabel* qwenKeyLabel;
     QSlider* rateSlider;
@@ -123,6 +126,7 @@ private:
     QString selectedRoomId() const;
     bool engineIsQwen() const;
     void updateEngineUi();
+    void rebuildQwenVoices(const QString& model);
 
     bool ensureGatewayRunning();
     void startGateway();

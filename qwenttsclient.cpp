@@ -2,11 +2,12 @@
 
 #include <QNetworkRequest>
 #include <QJsonDocument>
+#include <QList>
 #include <QMediaDevices>
+#include <QUuid>
 
-static const char* kRealtimeUrl =
-    "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3-tts-flash-realtime";
-static const int kSampleRate = 24000;   // 协议约定的 PCM 输出采样率
+static const int kRealtimeSampleRate = 24000;   // realtime 系（qwen3-tts）输出采样率
+static const int kAudioTtsSampleRate = 48000;   // audio-tts 系（qwen-audio-3.0）输出采样率
 static const int kMaxConnectFailures = 3;
 
 static int bytesPerSample(QAudioFormat::SampleFormat sf) {
@@ -21,12 +22,14 @@ static int bytesPerSample(QAudioFormat::SampleFormat sf) {
 
 QwenTtsClient::QwenTtsClient(QObject* parent)
     : QObject(parent) {
-    audioFormat.setSampleRate(kSampleRate);
+    audioFormat.setSampleRate(apiSampleRate);
     audioFormat.setChannelCount(1);
     audioFormat.setSampleFormat(QAudioFormat::Int16);
 
     connect(&ws, &QWebSocket::connected, this, &QwenTtsClient::onConnected);
     connect(&ws, &QWebSocket::textMessageReceived, this, &QwenTtsClient::onTextMessageReceived);
+    connect(&ws, &QWebSocket::binaryMessageReceived,
+            this, &QwenTtsClient::onBinaryMessageReceived);
     connect(&ws, &QWebSocket::disconnected, this, &QwenTtsClient::onDisconnected);
     connect(&ws, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::error),
             this, &QwenTtsClient::onErrorOccurred);
@@ -49,6 +52,20 @@ void QwenTtsClient::setApiKey(const QString& key) {
     if (newKey == apiKey) return;
     apiKey = newKey;
     // 换 Key 后强制重建会话
+    if (ws.state() != QAbstractSocket::UnconnectedState) ws.close();
+}
+
+void QwenTtsClient::setModel(const QString& m) {
+    const QString newModel = m.trimmed();
+    if (newModel.isEmpty() || newModel == model) return;
+    model = newModel;
+    apiSampleRate = isRealtimeProtocol() ? kRealtimeSampleRate : kAudioTtsSampleRate;
+    // 两类模型的端点与事件协议不同，切换后强制重建连接
+    sessionReady = false;
+    taskStarted = false;
+    taskId.clear();
+    configuredVoice.clear();
+    currentText.clear();
     if (ws.state() != QAbstractSocket::UnconnectedState) ws.close();
 }
 
@@ -83,6 +100,12 @@ void QwenTtsClient::stopAll() {
     sessionReady = false;
     connecting = false;
     configuredVoice.clear();
+    taskStarted = false;
+    taskId.clear();
+}
+
+bool QwenTtsClient::isRealtimeProtocol() const {
+    return model.contains(QStringLiteral("realtime"));
 }
 
 void QwenTtsClient::connectToService() {
@@ -94,7 +117,10 @@ void QwenTtsClient::connectToService() {
     if (connecting || ws.state() != QAbstractSocket::UnconnectedState) return;
 
     connecting = true;
-    QNetworkRequest req(QUrl(QString::fromLatin1(kRealtimeUrl)));
+    const QUrl url = isRealtimeProtocol()
+        ? QUrl(QStringLiteral("wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=%1").arg(model))
+        : QUrl(QStringLiteral("wss://dashscope.aliyuncs.com/api-ws/v1/inference/"));
+    QNetworkRequest req(url);
     req.setRawHeader("Authorization", "Bearer " + apiKey.toUtf8());
     req.setRawHeader("user-agent", "DMReader/0.4");
     ws.open(req);
@@ -111,7 +137,7 @@ void QwenTtsClient::sendSessionUpdate() {
     session["voice"] = voice;
     session["language_type"] = QStringLiteral("Auto");
     session["response_format"] = QStringLiteral("pcm");
-    session["sample_rate"] = kSampleRate;
+    session["sample_rate"] = kRealtimeSampleRate;
     QJsonObject obj;
     obj["type"] = QStringLiteral("session.update");
     obj["session"] = session;
@@ -119,11 +145,65 @@ void QwenTtsClient::sendSessionUpdate() {
     configuredVoice = voice;
 }
 
+void QwenTtsClient::sendRunTask() {
+    taskId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QJsonObject header;
+    header["action"] = QStringLiteral("run-task");
+    header["task_id"] = taskId;
+    header["streaming"] = QStringLiteral("duplex");
+    QJsonObject parameters;
+    parameters["text_type"] = QStringLiteral("PlainText");
+    parameters["voice"] = voice;
+    parameters["format"] = QStringLiteral("pcm");
+    parameters["sample_rate"] = apiSampleRate;
+    parameters["volume"] = 50;
+    parameters["rate"] = 1;
+    parameters["pitch"] = 1;
+    parameters["enable_ssml"] = false;
+    QJsonObject payload;
+    payload["task_group"] = QStringLiteral("audio");
+    payload["task"] = QStringLiteral("tts");
+    payload["function"] = QStringLiteral("SpeechSynthesizer");
+    payload["model"] = model;
+    payload["parameters"] = parameters;
+    payload["input"] = QJsonObject();
+    QJsonObject obj;
+    obj["header"] = header;
+    obj["payload"] = payload;
+    sendJson(obj);
+}
+
+void QwenTtsClient::sendContinueTask(const QString& text) {
+    QJsonObject header;
+    header["action"] = QStringLiteral("continue-task");
+    header["task_id"] = taskId;
+    header["streaming"] = QStringLiteral("duplex");
+    QJsonObject input;
+    input["text"] = text;
+    QJsonObject payload;
+    payload["input"] = input;
+    QJsonObject obj;
+    obj["header"] = header;
+    obj["payload"] = payload;
+    sendJson(obj);
+}
+
+void QwenTtsClient::sendFinishTask() {
+    QJsonObject header;
+    header["action"] = QStringLiteral("finish-task");
+    header["task_id"] = taskId;
+    header["streaming"] = QStringLiteral("duplex");
+    QJsonObject obj;
+    obj["header"] = header;
+    obj["payload"] = QJsonObject();
+    sendJson(obj);
+}
+
 void QwenTtsClient::onConnected() {
     connecting = false;
     connectFailures = 0;
     sessionReady = true;
-    sendSessionUpdate();
+    if (isRealtimeProtocol()) sendSessionUpdate();
     trySpeakNext();
 }
 
@@ -138,23 +218,73 @@ void QwenTtsClient::trySpeakNext() {
         return;   // 会话就绪后由 onConnected 再次调度
     }
 
-    if (configuredVoice != voice) sendSessionUpdate();
-
-    currentText = queue.dequeue();
-    QJsonObject append;
-    append["type"] = QStringLiteral("input_text_buffer.append");
-    append["text"] = currentText;
-    sendJson(append);
-    QJsonObject commit;
-    commit["type"] = QStringLiteral("input_text_buffer.commit");
-    sendJson(commit);
-    emit started(currentText);
+    if (isRealtimeProtocol()) {
+        if (configuredVoice != voice) sendSessionUpdate();
+        currentText = queue.dequeue();
+        QJsonObject append;
+        append["type"] = QStringLiteral("input_text_buffer.append");
+        append["text"] = currentText;
+        sendJson(append);
+        QJsonObject commit;
+        commit["type"] = QStringLiteral("input_text_buffer.commit");
+        sendJson(commit);
+        emit started(currentText);
+    } else {
+        // audio-tts 系（run-task 协议）：每个utterance一个任务
+        if (!taskStarted) {
+            currentText = queue.dequeue();
+            sendRunTask();
+            return;   // 收到 task-started 后继续
+        }
+        currentText = queue.dequeue();
+        sendContinueTask(currentText);
+        sendFinishTask();
+        emit started(currentText);
+    }
 }
 
 void QwenTtsClient::onTextMessageReceived(const QString& message) {
     QJsonDocument doc = QJsonDocument::fromJson(message.toUtf8());
     if (!doc.isObject()) return;
     QJsonObject root = doc.object();
+
+    if (!isRealtimeProtocol()) {
+        // ===== audio-tts 系（run-task 协议）=====
+        const QJsonObject header = root.value("header").toObject();
+        const QString event = header.value("event").toString();
+
+        if (event == "task-started") {
+            taskStarted = true;
+            if (!currentText.isEmpty()) {
+                sendContinueTask(currentText);
+                sendFinishTask();
+                emit started(currentText);
+            }
+            return;
+        }
+
+        if (event == "task-finished") {
+            // 本任务音频二进制帧已全部送达；排空交给 pump 定时器
+            taskStarted = false;
+            currentText.clear();
+            return;
+        }
+
+        if (event == "task-failed") {
+            QString msg = header.value("error_message").toString();
+            if (msg.isEmpty()) msg = header.value("error_code").toString();
+            if (msg.isEmpty()) msg = message.left(200);
+            emit failed(QStringLiteral("千问TTS: %1").arg(msg));
+            clearSession(false, QString());
+            // 任务失败后重建连接，避免会话状态残留
+            if (ws.state() != QAbstractSocket::UnconnectedState) ws.close();
+            return;
+        }
+        // result-generated 等其他事件忽略
+        return;
+    }
+
+    // ===== realtime 系（qwen3-tts session 协议）=====
     QString type = root.value("type").toString();
 
     if (type == "response.audio.delta") {
@@ -196,6 +326,23 @@ void QwenTtsClient::onTextMessageReceived(const QString& message) {
         sessionReady = false;
         configuredVoice.clear();
     }
+}
+
+void QwenTtsClient::onBinaryMessageReceived(const QByteArray& message) {
+    // audio-tts 系的二进制帧即原始 PCM（Int16 单声道，apiSampleRate）
+    if (message.isEmpty()) return;
+    QByteArray pcm = message;
+    if (volume < 100) {
+        qint16* samples = reinterpret_cast<qint16*>(pcm.data());
+        const int n = pcm.size() / 2;
+        for (int i = 0; i < n; ++i) {
+            const qint32 v = (samples[i] * volume) / 100;
+            samples[i] = static_cast<qint16>(qBound<qint32>(-32768, v, 32767));
+        }
+    }
+    pendingPcm.append(convertPcm(pcm));
+    openAudio();
+    if (!pumpTimer.isActive()) pumpTimer.start();
 }
 
 void QwenTtsClient::onPumpTimerTimeout() {
@@ -269,7 +416,7 @@ void QwenTtsClient::openAudio() {
 }
 
 /**
- * @brief 将 API 输出的 24kHz/单声道 Int16 PCM 转换为音频设备输出格式
+ * @brief 将 API 输出的单声道 Int16 PCM（apiSampleRate）转换为音频设备输出格式
  * 线性插值重采样 + 单声道复制 + 采样格式转换，语音场景质量足够
  */
 QByteArray QwenTtsClient::convertPcm(const QByteArray& pcm) {
@@ -279,17 +426,17 @@ QByteArray QwenTtsClient::convertPcm(const QByteArray& pcm) {
     const int srcN = pcm.size() / 2;
     if (srcN <= 0) return QByteArray();
 
-    // 1) 重采样 24kHz → targetRate（线性插值），中间格式保持 Int16
+    // 1) 重采样 apiSampleRate → targetRate（线性插值），中间格式保持 Int16
     QByteArray mono;
     const qint16* monoData = src;
     int monoN = srcN;
-    if (targetRate != kSampleRate) {
-        monoN = int((qint64)srcN * targetRate / kSampleRate);
+    if (targetRate != apiSampleRate) {
+        monoN = int((qint64)srcN * targetRate / apiSampleRate);
         if (monoN <= 0) return QByteArray();
         mono.resize(monoN * 2);
         qint16* dst = reinterpret_cast<qint16*>(mono.data());
         for (int i = 0; i < monoN; ++i) {
-            const double pos = double(i) * kSampleRate / targetRate;
+            const double pos = double(i) * apiSampleRate / targetRate;
             int i0 = int(pos);
             if (i0 > srcN - 1) i0 = srcN - 1;
             const int i1 = qMin(i0 + 1, srcN - 1);
@@ -358,6 +505,8 @@ void QwenTtsClient::onDisconnected() {
     }
     sessionReady = false;
     configuredVoice.clear();
+    taskStarted = false;
+    taskId.clear();
     if (!queue.isEmpty() && connectFailures < kMaxConnectFailures) retryTimer.start();
 }
 
@@ -369,6 +518,8 @@ void QwenTtsClient::clearSession(bool reportFailure, const QString& reason) {
     sessionReady = false;
     connecting = false;
     configuredVoice.clear();
+    taskStarted = false;
+    taskId.clear();
     currentText.clear();
     if (reportFailure && !reason.isEmpty()) emit failed(reason);
     if (!queue.isEmpty()) retryTimer.start();

@@ -172,7 +172,8 @@ void MainWindow::saveConfig() {
     settings.setValue("enterTemplate", enterTemplateInput->text());
     settings.setValue("engine", engineCombo->currentData().toString());
     settings.setValue("apiKey", apiKeyInput->text());
-    settings.setValue("qwenVoiceIndex", qwenVoiceCombo->currentIndex());
+    settings.setValue("qwenModel", modelCombo->currentData().toString());
+    settings.setValue("qwenVoice", qwenVoiceCombo->currentData().toString());
     settings.setValue("roomId", selectedRoomId());
     settings.setValue("randomEnabled", randomSwitch->isChecked());
     settings.setValue("randomInterval", randomIntervalSpin->value());
@@ -205,9 +206,14 @@ void MainWindow::loadConfig() {
     randomTextEdit->setPlainText(settings.value("randomText", "").toString());
     apiKeyInput->setText(settings.value("apiKey", "").toString());
 
-    int savedQwenVoice = settings.value("qwenVoiceIndex", 0).toInt();
-    if (savedQwenVoice >= 0 && savedQwenVoice < qwenVoiceCombo->count())
-        qwenVoiceCombo->setCurrentIndex(savedQwenVoice);
+    // 云端模型与音色恢复（音色按 voice 参数名保存，跨模型安全）
+    const QString savedModel = settings.value("qwenModel", "qwen3-tts-flash-realtime").toString();
+    const int modelIdx = modelCombo->findData(savedModel);
+    modelCombo->setCurrentIndex(modelIdx >= 0 ? modelIdx : 0);   // 触发音色列表重建
+
+    const QString savedVoiceParam = settings.value("qwenVoice", QString()).toString();
+    const int vIdx = savedVoiceParam.isEmpty() ? 0 : qwenVoiceCombo->findData(savedVoiceParam);
+    qwenVoiceCombo->setCurrentIndex(vIdx >= 0 ? vIdx : 0);
 
     // 房间选择恢复（房间未被发现时先按 ID 占位）
     QString savedRoom = settings.value("roomId", "").toString();
@@ -401,91 +407,44 @@ MainWindow::MainWindow(QWidget* parent)
     for (const auto& v : voices) voiceCombo->addItem(v.name());
     ttsLayout->addWidget(voiceCombo, 1, 1, 1, 2);
 
+    qwenModelLabel = new QLabel("云端模型：");
+    ttsLayout->addWidget(qwenModelLabel, 2, 0);
+    modelCombo = new QComboBox();
+    modelCombo->addItem("千问3 TTS Flash（实时）", "qwen3-tts-flash-realtime");
+    modelCombo->addItem("Qwen-Audio 3.0 TTS Plus", "qwen-audio-3.0-tts-plus");
+    modelCombo->setToolTip("音色与模型绑定，切换模型后音色列表随之变化");
+    ttsLayout->addWidget(modelCombo, 2, 1, 1, 2);
+
     qwenVoiceLabel = new QLabel("云端音色：");
-    ttsLayout->addWidget(qwenVoiceLabel, 2, 0);
+    ttsLayout->addWidget(qwenVoiceLabel, 3, 0);
     qwenVoiceCombo = new QComboBox();
-    struct QwenVoice { const char* name; const char* param; const char* desc; };
-    static const QwenVoice qwenVoices[] = {
-        {"芊悦", "Cherry", "阳光积极、亲切自然小姐姐（女性）"},
-        {"苏瑶", "Serena", "温柔小姐姐（女性）"},
-        {"晨煦", "Ethan", "标准普通话，带部分北方口音。阳光、温暖、活力、朝气（男性）"},
-        {"千雪", "Chelsie", "二次元虚拟女友（女性）"},
-        {"茉兔", "Momo", "撒娇搞怪，逗你开心（女性）"},
-        {"十三", "Vivian", "拽拽的、可爱的小暴躁（女性）"},
-        {"月白", "Moon", "率性帅气的月白（男性）"},
-        {"四月", "Maia", "知性与温柔的碰撞（女性）"},
-        {"凯", "Kai", "耳朵的一场SPA（男性）"},
-        {"不吃鱼", "Nofish", "不会翘舌音的设计师（男性）"},
-        {"萌宝", "Bella", "喝酒不打醉拳的小萝莉（女性）"},
-        {"詹妮弗", "Jennifer", "品牌级、电影质感般美语女声（女性）"},
-        {"甜茶", "Ryan", "节奏拉满，戏感炸裂，真实与张力共舞（男性）"},
-        {"卡捷琳娜", "Katerina", "御姐音色，韵律回味十足（女性）"},
-        {"艾登", "Aiden", "精通厨艺的美语大男孩（男性）"},
-        {"沧明子", "Eldric Sage", "沉稳睿智的老者，沧桑如松却心明如镜（男性）"},
-        {"乖小妹", "Mia", "温顺如春水，乖巧如初雪（女性）"},
-        {"沙小弥", "Mochi", "聪明伶俐的小大人，童真未泯却早慧如禅（男性）"},
-        {"燕铮莺", "Bellona", "声音洪亮，吐字清晰，人物鲜活（女性）"},
-        {"田叔", "Vincent", "一口独特的沙哑烟嗓，道尽千军万马与江湖豪情（男性）"},
-        {"萌小姬", "Bunny", "\"萌属性\"爆棚的小萝莉（女性）"},
-        {"阿闻", "Neil", "平直的基线语调，字正腔圆的新闻主持人（男性）"},
-        {"墨讲师", "Elias", "学科严谨性与叙事技巧兼备（女性）"},
-        {"徐大爷", "Arthur", "被岁月和旱烟浸泡过的质朴嗓音（男性）"},
-        {"邻家妹妹", "Nini", "糯米糍一样又软又黏的嗓音（女性）"},
-        {"小婉", "Seren", "温和舒缓的声线，助你更快入眠（女性）"},
-        {"顽屁小孩", "Pip", "调皮捣蛋却充满童真（男性）"},
-        {"少女阿月", "Stella", "甜到发腻的迷糊少女音，正义感瞬间拉满（女性）"},
-        {"博德加", "Bodega", "热情的西班牙大叔（男性）"},
-        {"索尼莎", "Sonrisa", "热情开朗的拉美大姐（女性）"},
-        {"阿列克", "Alek", "战斗民族的冷与毛呢大衣下的暖（男性）"},
-        {"多尔切", "Dolce", "慵懒的意大利大叔（男性）"},
-        {"素熙", "Sohee", "温柔开朗，情绪丰富的韩国欧尼（女性）"},
-        {"小野杏", "Ono Anna", "鬼灵精怪的青梅竹马（女性）"},
-        {"莱恩", "Lenn", "理性为底色、叛逆藏细节的德国青年（男性）"},
-        {"埃米尔安", "Emilien", "浪漫的法国大哥哥（男性）"},
-        {"安德雷", "Andre", "声音磁性，自然舒服、沉稳男生（男性）"},
-        {"拉迪奥·戈尔", "Radio Gol", "足球诗人，为足球而生的解说（男性）"},
-        {"上海-阿珍", "Jada", "风风火火的沪上阿姐（女性）"},
-        {"北京-晓东", "Dylan", "北京胡同里长大的少年（男性）"},
-        {"南京-老李", "Li", "耐心的瑜伽老师（男性）"},
-        {"陕西-秦川", "Marcus", "面宽话短，心实声沉——老陕的味道（男性）"},
-        {"闽南-阿杰", "Roy", "诙谐直爽、市井活泼的台湾哥仔形象（男性）"},
-        {"天津-李彼得", "Peter", "天津相声，专业捧哏（男性）"},
-        {"四川-晴儿", "Sunny", "甜到你心里的川妹子（女性）"},
-        {"四川-程川", "Eric", "一个跳脱市井的四川成都男子（男性）"},
-        {"粤语-阿强", "Rocky", "幽默风趣的阿强，在线陪聊（男性）"},
-        {"粤语-阿清", "Kiki", "甜美的港妹闺蜜（女性）"},
-    };
-    for (const auto& v : qwenVoices) {
-        qwenVoiceCombo->addItem(QString::fromUtf8(v.name), QString::fromUtf8(v.param));
-        qwenVoiceCombo->setItemData(qwenVoiceCombo->count() - 1,
-                                    QString::fromUtf8(v.desc), Qt::ToolTipRole);
-    }
-    ttsLayout->addWidget(qwenVoiceCombo, 2, 1, 1, 2);
+    rebuildQwenVoices(modelCombo->itemData(0).toString());
+    ttsLayout->addWidget(qwenVoiceCombo, 3, 1, 1, 2);
 
     qwenKeyLabel = new QLabel("API Key：");
-    ttsLayout->addWidget(qwenKeyLabel, 3, 0);
+    ttsLayout->addWidget(qwenKeyLabel, 4, 0);
     apiKeyInput = new QLineEdit();
     apiKeyInput->setEchoMode(QLineEdit::Password);
     apiKeyInput->setPlaceholderText("阿里云百炼 DashScope API Key");
-    ttsLayout->addWidget(apiKeyInput, 3, 1, 1, 2);
+    ttsLayout->addWidget(apiKeyInput, 4, 1, 1, 2);
 
-    ttsLayout->addWidget(new QLabel("语速："), 4, 0);
+    ttsLayout->addWidget(new QLabel("语速："), 5, 0);
     rateSlider = new QSlider(Qt::Horizontal);
     rateSlider->setRange(0, 100);
     rateSlider->setValue(50);
     rateLabel = new QLabel("50");
     rateLabel->setFixedWidth(30);
-    ttsLayout->addWidget(rateSlider, 4, 1);
-    ttsLayout->addWidget(rateLabel, 4, 2);
+    ttsLayout->addWidget(rateSlider, 5, 1);
+    ttsLayout->addWidget(rateLabel, 5, 2);
     // 新增：音量
-    ttsLayout->addWidget(new QLabel("音量："), 5, 0);
+    ttsLayout->addWidget(new QLabel("音量："), 6, 0);
     volumeSlider = new QSlider(Qt::Horizontal);
     volumeSlider->setRange(0, 100);
     volumeSlider->setValue(50);
     volumeLabel = new QLabel("50");
     volumeLabel->setFixedWidth(30);
-    ttsLayout->addWidget(volumeSlider, 5, 1);
-    ttsLayout->addWidget(volumeLabel, 5, 2);
+    ttsLayout->addWidget(volumeSlider, 6, 1);
+    ttsLayout->addWidget(volumeLabel, 6, 2);
     settingsTabLayout->addWidget(ttsGroup);
 
     // 窗口设置
@@ -527,7 +486,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.2");
+    QLabel* footer = new QLabel("版本：v0.5.3");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
@@ -558,6 +517,8 @@ MainWindow::MainWindow(QWidget* parent)
     // 云端 TTS
     connect(engineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &MainWindow::onEngineChanged);
+    connect(modelCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onQwenModelChanged);
     connect(qwenVoiceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         if (idx >= 0) qwenTts->setVoice(qwenVoiceCombo->itemData(idx).toString());
     });
@@ -814,10 +775,93 @@ void MainWindow::updateEngineUi() {
     const bool qwen = engineIsQwen();
     voiceCombo->setVisible(!qwen);
     systemVoiceLabel->setVisible(!qwen);
+    modelCombo->setVisible(qwen);
+    qwenModelLabel->setVisible(qwen);
     qwenVoiceCombo->setVisible(qwen);
     qwenVoiceLabel->setVisible(qwen);
     apiKeyInput->setVisible(qwen);
     qwenKeyLabel->setVisible(qwen);
+}
+
+void MainWindow::onQwenModelChanged(int index) {
+    if (index < 0) return;
+    const QString model = modelCombo->itemData(index).toString();
+    rebuildQwenVoices(model);
+    qwenTts->setModel(model);
+    if (qwenVoiceCombo->currentIndex() >= 0)
+        qwenTts->setVoice(qwenVoiceCombo->itemData(qwenVoiceCombo->currentIndex()).toString());
+}
+
+void MainWindow::rebuildQwenVoices(const QString& model) {
+    const QSignalBlocker blocker(qwenVoiceCombo);
+    qwenVoiceCombo->clear();
+
+    if (model == QLatin1String("qwen-audio-3.0-tts-plus")) {
+        // Qwen-Audio-3.0-TTS 专属龙安系列音色
+        qwenVoiceCombo->addItem("龙安灵心", "longanlingxin");
+        qwenVoiceCombo->setItemData(0, "知心温暖音 · 25岁 · 女", Qt::ToolTipRole);
+        qwenVoiceCombo->addItem("龙安麓风", "longanlufeng");
+        qwenVoiceCombo->setItemData(1, "明亮开朗音 · 25岁 · 男 · 中文（普通话）、英文", Qt::ToolTipRole);
+        return;
+    }
+
+    // qwen3-tts-flash-realtime 等模型共用 48 个精品音色
+    struct QwenVoice { const char* name; const char* param; const char* desc; };
+    static const QwenVoice qwenVoices[] = {
+        {"芊悦", "Cherry", "阳光积极、亲切自然小姐姐（女性）"},
+        {"苏瑶", "Serena", "温柔小姐姐（女性）"},
+        {"晨煦", "Ethan", "标准普通话，带部分北方口音。阳光、温暖、活力、朝气（男性）"},
+        {"千雪", "Chelsie", "二次元虚拟女友（女性）"},
+        {"茉兔", "Momo", "撒娇搞怪，逗你开心（女性）"},
+        {"十三", "Vivian", "拽拽的、可爱的小暴躁（女性）"},
+        {"月白", "Moon", "率性帅气的月白（男性）"},
+        {"四月", "Maia", "知性与温柔的碰撞（女性）"},
+        {"凯", "Kai", "耳朵的一场SPA（男性）"},
+        {"不吃鱼", "Nofish", "不会翘舌音的设计师（男性）"},
+        {"萌宝", "Bella", "喝酒不打醉拳的小萝莉（女性）"},
+        {"詹妮弗", "Jennifer", "品牌级、电影质感般美语女声（女性）"},
+        {"甜茶", "Ryan", "节奏拉满，戏感炸裂，真实与张力共舞（男性）"},
+        {"卡捷琳娜", "Katerina", "御姐音色，韵律回味十足（女性）"},
+        {"艾登", "Aiden", "精通厨艺的美语大男孩（男性）"},
+        {"沧明子", "Eldric Sage", "沉稳睿智的老者，沧桑如松却心明如镜（男性）"},
+        {"乖小妹", "Mia", "温顺如春水，乖巧如初雪（女性）"},
+        {"沙小弥", "Mochi", "聪明伶俐的小大人，童真未泯却早慧如禅（男性）"},
+        {"燕铮莺", "Bellona", "声音洪亮，吐字清晰，人物鲜活（女性）"},
+        {"田叔", "Vincent", "一口独特的沙哑烟嗓，道尽千军万马与江湖豪情（男性）"},
+        {"萌小姬", "Bunny", "\"萌属性\"爆棚的小萝莉（女性）"},
+        {"阿闻", "Neil", "平直的基线语调，字正腔圆的新闻主持人（男性）"},
+        {"墨讲师", "Elias", "学科严谨性与叙事技巧兼备（女性）"},
+        {"徐大爷", "Arthur", "被岁月和旱烟浸泡过的质朴嗓音（男性）"},
+        {"邻家妹妹", "Nini", "糯米糍一样又软又黏的嗓音（女性）"},
+        {"小婉", "Seren", "温和舒缓的声线，助你更快入眠（女性）"},
+        {"顽屁小孩", "Pip", "调皮捣蛋却充满童真（男性）"},
+        {"少女阿月", "Stella", "甜到发腻的迷糊少女音，正义感瞬间拉满（女性）"},
+        {"博德加", "Bodega", "热情的西班牙大叔（男性）"},
+        {"索尼莎", "Sonrisa", "热情开朗的拉美大姐（女性）"},
+        {"阿列克", "Alek", "战斗民族的冷与毛呢大衣下的暖（男性）"},
+        {"多尔切", "Dolce", "慵懒的意大利大叔（男性）"},
+        {"素熙", "Sohee", "温柔开朗，情绪丰富的韩国欧尼（女性）"},
+        {"小野杏", "Ono Anna", "鬼灵精怪的青梅竹马（女性）"},
+        {"莱恩", "Lenn", "理性为底色、叛逆藏细节的德国青年（男性）"},
+        {"埃米尔安", "Emilien", "浪漫的法国大哥哥（男性）"},
+        {"安德雷", "Andre", "声音磁性，自然舒服、沉稳男生（男性）"},
+        {"拉迪奥·戈尔", "Radio Gol", "足球诗人，为足球而生的解说（男性）"},
+        {"上海-阿珍", "Jada", "风风火火的沪上阿姐（女性）"},
+        {"北京-晓东", "Dylan", "北京胡同里长大的少年（男性）"},
+        {"南京-老李", "Li", "耐心的瑜伽老师（男性）"},
+        {"陕西-秦川", "Marcus", "面宽话短，心实声沉——老陕的味道（男性）"},
+        {"闽南-阿杰", "Roy", "诙谐直爽、市井活泼的台湾哥仔形象（男性）"},
+        {"天津-李彼得", "Peter", "天津相声，专业捧哏（男性）"},
+        {"四川-晴儿", "Sunny", "甜到你心里的川妹子（女性）"},
+        {"四川-程川", "Eric", "一个跳脱市井的四川成都男子（男性）"},
+        {"粤语-阿强", "Rocky", "幽默风趣的阿强，在线陪聊（男性）"},
+        {"粤语-阿清", "Kiki", "甜美的港妹闺蜜（女性）"},
+    };
+    for (const auto& v : qwenVoices) {
+        qwenVoiceCombo->addItem(QString::fromUtf8(v.name), QString::fromUtf8(v.param));
+        qwenVoiceCombo->setItemData(qwenVoiceCombo->count() - 1,
+                                    QString::fromUtf8(v.desc), Qt::ToolTipRole);
+    }
 }
 
 void MainWindow::onEngineChanged(int index) {
