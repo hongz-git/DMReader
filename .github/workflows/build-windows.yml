@@ -28,7 +28,19 @@ jobs:
           target: desktop
           arch: win64_mingw
           modules: qtwebsockets qtspeech qtmultimedia
+          tools: tools_mingw1310
           cache: true
+
+      - name: Put Qt's MinGW toolchain first in PATH
+        shell: pwsh
+        run: |
+          $mingw = Get-ChildItem "$env:IQTA_TOOLS" -Directory -Filter "mingw*" |
+                  Where-Object { Test-Path "$($_.FullName)\bin\g++.exe" } |
+                  Select-Object -First 1
+          if (-not $mingw) { throw 'Qt MinGW toolchain not found under IQTA_TOOLS' }
+          Add-Content $env:GITHUB_PATH "$($mingw.FullName)\bin"
+          Write-Host "Using MinGW: $($mingw.FullName)"
+          & "$($mingw.FullName)\bin\g++.exe" --version | Select-Object -First 1
 
       - name: Build DanmuReader
         shell: pwsh
