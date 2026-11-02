@@ -20,6 +20,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QTabWidget>
+#include <QSplitter>
 #include <QScrollBar>
 #include <QMessageBox>
 #include <QDateTime>
@@ -86,6 +88,7 @@ private:
     QLabel* opacityLabel;
     QLineEdit* danmuTemplateInput;
     QLineEdit* giftTemplateInput;
+    QLineEdit* enterTemplateInput;
 
     // 弹幕
     QWebSocket* webSocket;
@@ -109,6 +112,7 @@ private:
     bool manualDisconnect;
     QString danmuTpl;
     QString giftTpl;
+    QString enterTpl;
 
     void log(const QString& msg);
     void speak(const QString& text);

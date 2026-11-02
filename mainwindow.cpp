@@ -169,6 +169,7 @@ void MainWindow::saveConfig() {
     settings.setValue("opacity", opacitySlider->value());
     settings.setValue("danmuTemplate", danmuTemplateInput->text());
     settings.setValue("giftTemplate", giftTemplateInput->text());
+    settings.setValue("enterTemplate", enterTemplateInput->text());
     settings.setValue("engine", engineCombo->currentData().toString());
     settings.setValue("apiKey", apiKeyInput->text());
     settings.setValue("qwenVoiceIndex", qwenVoiceCombo->currentIndex());
@@ -197,6 +198,7 @@ void MainWindow::loadConfig() {
     opacitySlider->setValue(settings.value("opacity", 100).toInt());
     danmuTemplateInput->setText(settings.value("danmuTemplate", "%1说：%2").toString());
     giftTemplateInput->setText(settings.value("giftTemplate", "感谢%1送出的%2%3个").toString());
+    enterTemplateInput->setText(settings.value("enterTemplate", "%1 进入了直播间").toString());
 
     randomSwitch->setChecked(settings.value("randomEnabled", false).toBool());
     randomIntervalSpin->setValue(settings.value("randomInterval", 60).toInt());
@@ -228,6 +230,7 @@ void MainWindow::loadConfig() {
 
     danmuTpl = danmuTemplateInput->text();
     giftTpl = giftTemplateInput->text();
+    enterTpl = enterTemplateInput->text();
 }
 
 /**
@@ -240,7 +243,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     // ========== 窗口基本设置 ==========
     setWindowTitle("抖音弹幕朗读助手");
-    resize(560, 900);
+    resize(680, 780);
 
     // ========== TTS 引擎初始化 ==========
     tts = new QTextToSpeech(this);
@@ -284,42 +287,85 @@ MainWindow::MainWindow(QWidget* parent)
     title->setAlignment(Qt::AlignCenter);
     layout->addWidget(title);
 
-    // ========== 连接设置 ==========
+    // ========== 左右分栏（左 60% 配置 / 右 40% 弹幕+日志）==========
+    QSplitter* splitter = new QSplitter(Qt::Horizontal);
+    splitter->setChildrenCollapsible(false);
+    layout->addWidget(splitter, 1);
+
+    // ---- 左侧 ----
+    QWidget* leftPane = new QWidget();
+    QVBoxLayout* leftLayout = new QVBoxLayout(leftPane);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(8);
+
+    // 连接设置：地址 连接 断开 房间
     QGroupBox* connGroup = new QGroupBox("连接");
-    QGridLayout* connLayout = new QGridLayout(connGroup);
+    QHBoxLayout* connLayout = new QHBoxLayout(connGroup);
     urlInput = new QLineEdit("ws://127.0.0.1:8888");
     urlInput->setPlaceholderText("弹幕网关地址");
     connectBtn = new QPushButton("连接");
     disconnectBtn = new QPushButton("断开");
     disconnectBtn->setEnabled(false);
-    connLayout->addWidget(urlInput, 0, 0);
-    connLayout->addWidget(connectBtn, 0, 1);
-    connLayout->addWidget(disconnectBtn, 0, 2);
-    connLayout->addWidget(new QLabel("房间："), 1, 0);
     roomCombo = new QComboBox();
     roomCombo->addItem("全部房间", QString());
     roomCombo->setToolTip("打开直播间后自动发现房间；选择指定房间只朗读该直播间");
-    connLayout->addWidget(roomCombo, 1, 1, 1, 2);
-    layout->addWidget(connGroup);
+    connLayout->addWidget(urlInput, 2);
+    connLayout->addWidget(connectBtn);
+    connLayout->addWidget(disconnectBtn);
+    connLayout->addWidget(roomCombo, 1);
+    leftLayout->addWidget(connGroup);
 
-    // ========== 功能开关 ==========
-    QGroupBox* switchGroup = new QGroupBox("朗读开关");
-    QHBoxLayout* switchLayout = new QHBoxLayout(switchGroup);
-    danmuSwitch = new QCheckBox("弹幕朗读");
-    giftSwitch = new QCheckBox("礼物朗读");
-    enterSwitch = new QCheckBox("进房播报");  // 新增
+    // 配置分组（Tab 化）
+    QTabWidget* configTabs = new QTabWidget();
+
+    // Tab：弹幕朗读
+    QWidget* danmuTab = new QWidget();
+    QVBoxLayout* danmuTabLayout = new QVBoxLayout(danmuTab);
+    danmuSwitch = new QCheckBox("启用弹幕朗读");
     danmuSwitch->setChecked(true);
-    giftSwitch->setChecked(true);
-    enterSwitch->setChecked(true);             // 新增
-    switchLayout->addWidget(danmuSwitch);
-    switchLayout->addWidget(giftSwitch);
-    switchLayout->addWidget(enterSwitch);      // 新增
-    switchLayout->addStretch();
-    layout->addWidget(switchGroup);
+    danmuTabLayout->addWidget(danmuSwitch);
+    QHBoxLayout* danmuTplRow = new QHBoxLayout();
+    danmuTplRow->addWidget(new QLabel("模板："));
+    danmuTemplateInput = new QLineEdit("%1说：%2");
+    danmuTemplateInput->setPlaceholderText("%1=昵称 %2=内容");
+    danmuTplRow->addWidget(danmuTemplateInput);
+    danmuTabLayout->addLayout(danmuTplRow);
+    danmuTabLayout->addStretch();
+    configTabs->addTab(danmuTab, "弹幕朗读");
 
-    // 随机朗读（长时间无弹幕时暖场）
-    QGroupBox* randomGroup = new QGroupBox("随机朗读");
-    QVBoxLayout* randomLayout = new QVBoxLayout(randomGroup);
+    // Tab：礼物朗读
+    QWidget* giftTab = new QWidget();
+    QVBoxLayout* giftTabLayout = new QVBoxLayout(giftTab);
+    giftSwitch = new QCheckBox("启用礼物朗读");
+    giftSwitch->setChecked(true);
+    giftTabLayout->addWidget(giftSwitch);
+    QHBoxLayout* giftTplRow = new QHBoxLayout();
+    giftTplRow->addWidget(new QLabel("模板："));
+    giftTemplateInput = new QLineEdit("感谢%1送出的%2%3个");
+    giftTemplateInput->setPlaceholderText("%1=昵称 %2=礼物名 %3=数量");
+    giftTplRow->addWidget(giftTemplateInput);
+    giftTabLayout->addLayout(giftTplRow);
+    giftTabLayout->addStretch();
+    configTabs->addTab(giftTab, "礼物朗读");
+
+    // Tab：进房朗读
+    QWidget* enterTab = new QWidget();
+    QVBoxLayout* enterTabLayout = new QVBoxLayout(enterTab);
+    enterSwitch = new QCheckBox("启用进房播报");
+    enterSwitch->setChecked(true);
+    enterTabLayout->addWidget(enterSwitch);
+    QHBoxLayout* enterTplRow = new QHBoxLayout();
+    enterTplRow->addWidget(new QLabel("模板："));
+    enterTemplateInput = new QLineEdit("%1 进入了直播间");
+    enterTemplateInput->setPlaceholderText("%1=昵称");
+    enterTplRow->addWidget(enterTemplateInput);
+    enterTabLayout->addLayout(enterTplRow);
+    enterTabLayout->addStretch();
+    configTabs->addTab(enterTab, "进房朗读");
+
+    // Tab：随机朗读（长时间无弹幕时暖场）
+    QWidget* randomTab = new QWidget();
+    QVBoxLayout* randomTabLayout = new QVBoxLayout(randomTab);
     QHBoxLayout* randomCfgLayout = new QHBoxLayout();
     randomSwitch = new QCheckBox("启用（无朗读持续");
     randomSwitch->setToolTip("超过设定时长没有任何朗读时，随机播放一行随机模板");
@@ -332,14 +378,15 @@ MainWindow::MainWindow(QWidget* parent)
     randomCfgLayout->addWidget(randomIntervalSpin);
     randomCfgLayout->addWidget(randomSuffixLabel);
     randomCfgLayout->addStretch();
-    randomLayout->addLayout(randomCfgLayout);
+    randomTabLayout->addLayout(randomCfgLayout);
     randomTextEdit = new QPlainTextEdit();
     randomTextEdit->setPlaceholderText("一行一条随机话术，例如：\n欢迎来到直播间，喜欢主播点个关注哦～\n有什么想听的，打在弹幕里告诉我吧～");
-    randomTextEdit->setMaximumHeight(96);
-    randomLayout->addWidget(randomTextEdit);
-    layout->addWidget(randomGroup);
+    randomTabLayout->addWidget(randomTextEdit, 1);
+    configTabs->addTab(randomTab, "随机朗读");
 
-    // ========== TTS 设置 ==========
+    // Tab：设置（语音设置 + 窗口设置）
+    QWidget* settingsTab = new QWidget();
+    QVBoxLayout* settingsTabLayout = new QVBoxLayout(settingsTab);
     QGroupBox* ttsGroup = new QGroupBox("语音设置");
     QGridLayout* ttsLayout = new QGridLayout(ttsGroup);
     ttsLayout->addWidget(new QLabel("引擎："), 0, 0);
@@ -439,20 +486,7 @@ MainWindow::MainWindow(QWidget* parent)
     volumeLabel->setFixedWidth(30);
     ttsLayout->addWidget(volumeSlider, 5, 1);
     ttsLayout->addWidget(volumeLabel, 5, 2);
-    layout->addWidget(ttsGroup);
-
-    // 朗读模板
-    QGroupBox* tplGroup = new QGroupBox("朗读模板");
-    QGridLayout* tplLayout = new QGridLayout(tplGroup);
-    tplLayout->addWidget(new QLabel("弹幕模板："), 0, 0);
-    danmuTemplateInput = new QLineEdit("%1说：%2");
-    danmuTemplateInput->setPlaceholderText("%1=昵称 %2=内容");
-    tplLayout->addWidget(danmuTemplateInput, 0, 1);
-    tplLayout->addWidget(new QLabel("礼物模板："), 1, 0);
-    giftTemplateInput = new QLineEdit("感谢%1送出的%2%3个");
-    giftTemplateInput->setPlaceholderText("%1=昵称 %2=礼物名 %3=数量");
-    tplLayout->addWidget(giftTemplateInput, 1, 1);
-    layout->addWidget(tplGroup);
+    settingsTabLayout->addWidget(ttsGroup);
 
     // 窗口设置
     QGroupBox* winGroup = new QGroupBox("窗口设置");
@@ -467,29 +501,42 @@ MainWindow::MainWindow(QWidget* parent)
     opacityLabel->setFixedWidth(40);
     winLayout->addWidget(opacitySlider, 0, 2);
     winLayout->addWidget(opacityLabel, 0, 3);
-    layout->addWidget(winGroup);
+    settingsTabLayout->addWidget(winGroup);
+    settingsTabLayout->addStretch();
+    configTabs->addTab(settingsTab, "设置");
 
-    // ========== 弹幕列表 ==========
+    leftLayout->addWidget(configTabs, 1);
+    splitter->addWidget(leftPane);
+
+    // ---- 右侧：弹幕列表 + 日志 ----
+    QWidget* rightPane = new QWidget();
+    QVBoxLayout* rightLayout = new QVBoxLayout(rightPane);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(8);
+
     QGroupBox* listGroup = new QGroupBox("弹幕");
     QVBoxLayout* listLayout = new QVBoxLayout(listGroup);
     danmuList = new QListWidget();
-    danmuList->setMaximumHeight(200);
     listLayout->addWidget(danmuList);
-    layout->addWidget(listGroup);
+    rightLayout->addWidget(listGroup, 3);
 
-    // ========== 日志 ==========
     QGroupBox* logGroup = new QGroupBox("日志");
     QVBoxLayout* logLayout = new QVBoxLayout(logGroup);
     logView = new QTextEdit();
     logView->setReadOnly(true);
-    logView->setMaximumHeight(80);
+    logView->setMinimumHeight(90);
     logLayout->addWidget(logView);
-    layout->addWidget(logGroup);
+    rightLayout->addWidget(logGroup, 1);
+
+    splitter->addWidget(rightPane);
+    splitter->setStretchFactor(0, 6);
+    splitter->setStretchFactor(1, 4);
+    splitter->setSizes(QList<int>() << 6 << 4);
 
     // ========== 底部版本信息 ==========
     QLabel* footer = new QLabel(
         "本程序仅供个人自用，用于主播本人监听自己直播间弹幕，请遵守相关法律法规，违者后果自负\n\n"
-        "版本：v0.4.0\n"
+        "版本：v0.5.0\n"
         "开发者：Byjsmc\n"
         "最后更新于：2026/09/05"
         );
@@ -556,6 +603,9 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(giftTemplateInput, &QLineEdit::editingFinished, this, [this]() {
         giftTpl = giftTemplateInput->text();
+    });
+    connect(enterTemplateInput, &QLineEdit::editingFinished, this, [this]() {
+        enterTpl = enterTemplateInput->text();
     });
 
     log("程序已启动，请先启动弹幕网关再点击连接");
@@ -759,7 +809,9 @@ void MainWindow::parseDanmu(const QString& json) {
         danmuList->scrollToBottom();
 
         if (enterSwitch->isChecked()) {
-            enqueueSpeak(QString("%1 进入了直播间").arg(nickname));
+            QString text = enterTpl;
+            text.replace("%1", nickname);
+            enqueueSpeak(text);
         }
     }
 }
