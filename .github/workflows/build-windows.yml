@@ -27,7 +27,7 @@ jobs:
           host: windows
           target: desktop
           arch: win64_mingw
-          modules: qtwebsockets qtspeech
+          modules: qtwebsockets qtspeech qtmultimedia
           cache: true
 
       - name: Build DanmuReader
