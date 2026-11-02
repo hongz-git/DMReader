@@ -42,22 +42,22 @@ jobs:
           Write-Host "Using MinGW: $($mingw.FullName)"
           & "$($mingw.FullName)\bin\g++.exe" --version | Select-Object -First 1
 
-      - name: Build DanmuReader
+      - name: Build DMReader
         shell: pwsh
         run: |
-          qmake CONFIG+=release CONFIG-=debug_and_release DanmuReader.pro
+          qmake CONFIG+=release CONFIG-=debug_and_release DMReader.pro
           mingw32-make "-j$env:NUMBER_OF_PROCESSORS"
 
       - name: Deploy Qt runtime
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path deploy | Out-Null
-          $exe = Get-ChildItem -Recurse -Filter DanmuReader.exe |
+          $exe = Get-ChildItem -Recurse -Filter DMReader.exe |
                  Where-Object { $_.FullName -notmatch '\\deploy\\' } |
                  Select-Object -First 1
-          if (-not $exe) { throw 'DanmuReader.exe not found after build' }
+          if (-not $exe) { throw 'DMReader.exe not found after build' }
           Copy-Item $exe.FullName deploy/
-          windeployqt --release deploy\DanmuReader.exe
+          windeployqt --release deploy\DMReader.exe
           # windeployqt 一般会带上 MinGW 运行库，这里再兜底补一次
           $bin = Split-Path (Get-Command mingw32-make).Source
           Copy-Item "$bin\libgcc_s_seh-1.dll", "$bin\libstdc++-6.dll", "$bin\libwinpthread-1.dll" `
@@ -75,17 +75,17 @@ jobs:
 
       - name: Create zip package
         shell: pwsh
-        run: Compress-Archive -Path deploy\* -DestinationPath DanmuReader-windows-x64.zip -Force
+        run: Compress-Archive -Path deploy\* -DestinationPath DMReader-windows-x64.zip -Force
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DanmuReader-windows-x64
-          path: DanmuReader-windows-x64.zip
+          name: DMReader-windows-x64
+          path: DMReader-windows-x64.zip
           if-no-files-found: error
 
       - name: Upload to GitHub Release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: DanmuReader-windows-x64.zip
+          files: DMReader-windows-x64.zip
