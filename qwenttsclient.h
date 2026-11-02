@@ -4,7 +4,9 @@
 #include <QObject>
 #include <QWebSocket>
 #include <QAudioSink>
+#include <QAudio>
 #include <QAudioFormat>
+#include <QIODevice>
 #include <QTimer>
 #include <QQueue>
 #include <QJsonObject>
@@ -74,6 +76,7 @@ private:
 
     QByteArray pendingPcm;                 // 尚未写入音频设备的 PCM 数据
     QAudioSink* sink = nullptr;
+    QIODevice* audioIo = nullptr;          // 推送模式写入端
     QAudioFormat audioFormat;
 };
 

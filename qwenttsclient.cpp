@@ -189,7 +189,7 @@ void QwenTtsClient::onTextMessageReceived(const QString& message) {
 }
 
 void QwenTtsClient::onPumpTimerTimeout() {
-    if (!sink) {
+    if (!sink || !audioIo) {
         if (pendingPcm.isEmpty()) pumpTimer.stop();
         else pendingPcm.clear();
         return;
@@ -198,13 +198,13 @@ void QwenTtsClient::onPumpTimerTimeout() {
         const qint64 free = sink->bytesFree();
         if (free <= 0) break;
         const qint64 chunk = qMin<qint64>(free, pendingPcm.size());
-        const qint64 written = sink->write(pendingPcm.constData(), chunk);
+        const qint64 written = audioIo->write(pendingPcm.constData(), chunk);
         if (written <= 0) break;
         pendingPcm.remove(0, written);
     }
 
     if (pendingPcm.isEmpty() && currentText.isEmpty()
-            && sink->state() != QAudioSink::ActiveState) {
+            && sink->state() != QAudio::ActiveState) {
         // 设备缓冲已排空且没有新的合成任务
         pumpTimer.stop();
         closeAudio();
@@ -225,7 +225,11 @@ void QwenTtsClient::openAudio() {
     }
     sink = new QAudioSink(dev, audioFormat, this);
     sink->setBufferSize(19200);   // 0.4s @ 24kHz/16bit/mono
-    sink->start();
+    audioIo = sink->start();
+    if (!audioIo) {
+        emit failed(QStringLiteral("音频设备启动失败"));
+        closeAudio();
+    }
 }
 
 void QwenTtsClient::closeAudio() {
@@ -233,6 +237,7 @@ void QwenTtsClient::closeAudio() {
     sink->stop();
     sink->deleteLater();
     sink = nullptr;
+    audioIo = nullptr;
 }
 
 void QwenTtsClient::onDisconnected() {
