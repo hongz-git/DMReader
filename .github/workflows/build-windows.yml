@@ -1,0 +1,79 @@
+name: Build Windows Package
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt 6 (MinGW 64-bit)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.*'
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          modules: qtwebsockets qttexttospeech
+          cache: true
+
+      - name: Build DanmuReader
+        shell: pwsh
+        run: |
+          qmake CONFIG+=release CONFIG-=debug_and_release DanmuReader.pro
+          mingw32-make "-j$env:NUMBER_OF_PROCESSORS"
+
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path deploy | Out-Null
+          $exe = Get-ChildItem -Recurse -Filter DanmuReader.exe |
+                 Where-Object { $_.FullName -notmatch '\\deploy\\' } |
+                 Select-Object -First 1
+          if (-not $exe) { throw 'DanmuReader.exe not found after build' }
+          Copy-Item $exe.FullName deploy/
+          windeployqt --release deploy\DanmuReader.exe
+          # windeployqt 一般会带上 MinGW 运行库，这里再兜底补一次
+          $bin = Split-Path (Get-Command mingw32-make).Source
+          Copy-Item "$bin\libgcc_s_seh-1.dll", "$bin\libstdc++-6.dll", "$bin\libwinpthread-1.dll" `
+            -Destination deploy -ErrorAction SilentlyContinue
+
+      - name: Bundle danmu gateway (DouyinBarrageGrab)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri 'https://github.com/ape-byte/DouyinBarrageGrab/releases/download/v2.8.0/Release_V2.8.0.zip' -OutFile gateway.zip
+          Expand-Archive gateway.zip -DestinationPath gateway-extract
+          $gwExe = Get-ChildItem gateway-extract -Recurse -Filter WssBarrageServer.exe | Select-Object -First 1
+          if (-not $gwExe) { throw 'WssBarrageServer.exe not found in gateway archive' }
+          New-Item -ItemType Directory -Path deploy\gateway | Out-Null
+          Copy-Item "$($gwExe.Directory.FullName)\*" deploy\gateway -Recurse -Force
+
+      - name: Create zip package
+        shell: pwsh
+        run: Compress-Archive -Path deploy\* -DestinationPath DanmuReader-windows-x64.zip -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DanmuReader-windows-x64
+          path: DanmuReader-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: DanmuReader-windows-x64.zip

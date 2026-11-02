@@ -1,0 +1,12 @@
+# Qt / qmake build outputs
+*.o
+*.obj
+Makefile*
+.qmake.stash
+release/
+debug/
+deploy/
+dist/
+gateway.zip
+gateway-extract/
+DanmuReader-windows-x64.zip
