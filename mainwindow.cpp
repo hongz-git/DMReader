@@ -6,6 +6,9 @@
 #include <QGridLayout>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QRandomGenerator>
+
+#include <algorithm>
 
 /**
  * @brief 检查网关是否已经在运行（通过尝试连接 ws 端口）
@@ -84,13 +87,41 @@ void MainWindow::stopGateway() {
  * @brief 入队朗读（防刷屏）
  */
 void MainWindow::enqueueSpeak(const QString& text) {
+    lastSpeakTime = QDateTime::currentDateTime();
     ttsQueue.enqueue(text);
     if (ttsQueue.size() > 10) ttsQueue.dequeue();
 }
 
 void MainWindow::onTtsTimerTimeout() {
-    if (!ttsQueue.isEmpty() && tts->state() != QTextToSpeech::Speaking) {
+    if (ttsQueue.isEmpty()) return;
+
+    if (engineIsQwen()) {
+        if (!qwenTts->isBusy()) {
+            qwenTts->say(ttsQueue.dequeue());
+        }
+        return;
+    }
+
+    if (tts->state() != QTextToSpeech::Speaking) {
         tts->say(ttsQueue.dequeue());
+    }
+}
+
+void MainWindow::onRandomTimerTimeout() {
+    if (!randomSwitch->isChecked()) return;
+    if (!ttsQueue.isEmpty()) return;
+    if (engineIsQwen() ? qwenTts->isBusy() : tts->state() == QTextToSpeech::Speaking) return;
+
+    const qint64 idleSec = lastSpeakTime.secsTo(QDateTime::currentDateTime());
+    if (idleSec < randomIntervalSpin->value()) return;
+
+    const QStringList lines = randomTextEdit->toPlainText().split('\n', Qt::SkipEmptyParts);
+    if (lines.isEmpty()) return;
+
+    const QString line = lines.at(QRandomGenerator::global()->bounded(lines.size())).trimmed();
+    if (!line.isEmpty()) {
+        log("🎲 随机朗读: " + line);
+        enqueueSpeak(line);
     }
 }
 
@@ -138,6 +169,13 @@ void MainWindow::saveConfig() {
     settings.setValue("opacity", opacitySlider->value());
     settings.setValue("danmuTemplate", danmuTemplateInput->text());
     settings.setValue("giftTemplate", giftTemplateInput->text());
+    settings.setValue("engine", engineCombo->currentData().toString());
+    settings.setValue("apiKey", apiKeyInput->text());
+    settings.setValue("qwenVoiceIndex", qwenVoiceCombo->currentIndex());
+    settings.setValue("roomId", selectedRoomId());
+    settings.setValue("randomEnabled", randomSwitch->isChecked());
+    settings.setValue("randomInterval", randomIntervalSpin->value());
+    settings.setValue("randomText", randomTextEdit->toPlainText());
 }
 
 void MainWindow::loadConfig() {
@@ -160,6 +198,28 @@ void MainWindow::loadConfig() {
     danmuTemplateInput->setText(settings.value("danmuTemplate", "%1说：%2").toString());
     giftTemplateInput->setText(settings.value("giftTemplate", "感谢%1送出的%2%3个").toString());
 
+    randomSwitch->setChecked(settings.value("randomEnabled", false).toBool());
+    randomIntervalSpin->setValue(settings.value("randomInterval", 60).toInt());
+    randomTextEdit->setPlainText(settings.value("randomText", "").toString());
+    apiKeyInput->setText(settings.value("apiKey", "").toString());
+
+    int savedQwenVoice = settings.value("qwenVoiceIndex", 0).toInt();
+    if (savedQwenVoice >= 0 && savedQwenVoice < qwenVoiceCombo->count())
+        qwenVoiceCombo->setCurrentIndex(savedQwenVoice);
+
+    // 房间选择恢复（房间未被发现时先按 ID 占位）
+    QString savedRoom = settings.value("roomId", "").toString();
+    refreshRoomCombo(savedRoom);
+
+    QString engine = settings.value("engine", "system").toString();
+    int engineIdx = engineCombo->findData(engine);
+    engineCombo->setCurrentIndex(engineIdx >= 0 ? engineIdx : 0);
+    updateEngineUi();
+
+    qwenTts->setApiKey(apiKeyInput->text());
+    if (qwenVoiceCombo->currentIndex() >= 0)
+        qwenTts->setVoice(qwenVoiceCombo->itemData(qwenVoiceCombo->currentIndex()).toString());
+
     tts->setRate(rateSlider->value() / 100.0);
     tts->setVolume(volumeSlider->value() / 100.0);
     if (voiceCombo->currentIndex() >= 0 && voiceCombo->currentIndex() < voices.size())
@@ -180,11 +240,25 @@ MainWindow::MainWindow(QWidget* parent)
 
     // ========== 窗口基本设置 ==========
     setWindowTitle("抖音弹幕朗读助手");
-    resize(550, 750);
+    resize(560, 900);
 
     // ========== TTS 引擎初始化 ==========
     tts = new QTextToSpeech(this);
     voices = tts->availableVoices();
+
+    qwenTts = new QwenTtsClient(this);
+    connect(qwenTts, &QwenTtsClient::started, this, [this](const QString& t) {
+        Q_UNUSED(t);
+    });
+    connect(qwenTts, &QwenTtsClient::failed, this, [this](const QString& msg) {
+        log("⚠️ " + msg);
+    });
+
+    // 随机朗读定时器
+    randomTimer = new QTimer(this);
+    randomTimer->setInterval(5000);
+    connect(randomTimer, &QTimer::timeout, this, &MainWindow::onRandomTimerTimeout);
+    lastSpeakTime = QDateTime::currentDateTime();
 
     // ========== WebSocket 初始化 ==========
     webSocket = new QWebSocket();
@@ -212,15 +286,20 @@ MainWindow::MainWindow(QWidget* parent)
 
     // ========== 连接设置 ==========
     QGroupBox* connGroup = new QGroupBox("连接");
-    QHBoxLayout* connLayout = new QHBoxLayout(connGroup);
+    QGridLayout* connLayout = new QGridLayout(connGroup);
     urlInput = new QLineEdit("ws://127.0.0.1:8888");
     urlInput->setPlaceholderText("弹幕网关地址");
     connectBtn = new QPushButton("连接");
     disconnectBtn = new QPushButton("断开");
     disconnectBtn->setEnabled(false);
-    connLayout->addWidget(urlInput);
-    connLayout->addWidget(connectBtn);
-    connLayout->addWidget(disconnectBtn);
+    connLayout->addWidget(urlInput, 0, 0);
+    connLayout->addWidget(connectBtn, 0, 1);
+    connLayout->addWidget(disconnectBtn, 0, 2);
+    connLayout->addWidget(new QLabel("房间："), 1, 0);
+    roomCombo = new QComboBox();
+    roomCombo->addItem("全部房间", QString());
+    roomCombo->setToolTip("打开直播间后自动发现房间；选择指定房间只朗读该直播间");
+    connLayout->addWidget(roomCombo, 1, 1, 1, 2);
     layout->addWidget(connGroup);
 
     // ========== 功能开关 ==========
@@ -238,30 +317,128 @@ MainWindow::MainWindow(QWidget* parent)
     switchLayout->addStretch();
     layout->addWidget(switchGroup);
 
+    // 随机朗读（长时间无弹幕时暖场）
+    QGroupBox* randomGroup = new QGroupBox("随机朗读");
+    QVBoxLayout* randomLayout = new QVBoxLayout(randomGroup);
+    QHBoxLayout* randomCfgLayout = new QHBoxLayout();
+    randomSwitch = new QCheckBox("启用（无朗读持续");
+    randomSwitch->setToolTip("超过设定时长没有任何朗读时，随机播放一行随机模板");
+    randomIntervalSpin = new QSpinBox();
+    randomIntervalSpin->setRange(10, 3600);
+    randomIntervalSpin->setValue(60);
+    randomIntervalSpin->setSuffix(" 秒");
+    QLabel* randomSuffixLabel = new QLabel("后随机播放一行）");
+    randomCfgLayout->addWidget(randomSwitch);
+    randomCfgLayout->addWidget(randomIntervalSpin);
+    randomCfgLayout->addWidget(randomSuffixLabel);
+    randomCfgLayout->addStretch();
+    randomLayout->addLayout(randomCfgLayout);
+    randomTextEdit = new QPlainTextEdit();
+    randomTextEdit->setPlaceholderText("一行一条随机话术，例如：\n欢迎来到直播间，喜欢主播点个关注哦～\n有什么想听的，打在弹幕里告诉我吧～");
+    randomTextEdit->setMaximumHeight(96);
+    randomLayout->addWidget(randomTextEdit);
+    layout->addWidget(randomGroup);
+
     // ========== TTS 设置 ==========
     QGroupBox* ttsGroup = new QGroupBox("语音设置");
     QGridLayout* ttsLayout = new QGridLayout(ttsGroup);
-    ttsLayout->addWidget(new QLabel("音色："), 0, 0);
+    ttsLayout->addWidget(new QLabel("引擎："), 0, 0);
+    engineCombo = new QComboBox();
+    engineCombo->addItem("系统语音（本地）", "system");
+    engineCombo->addItem("通义千问 TTS（云端）", "qwen");
+    ttsLayout->addWidget(engineCombo, 0, 1, 1, 2);
+
+    systemVoiceLabel = new QLabel("系统音色：");
+    ttsLayout->addWidget(systemVoiceLabel, 1, 0);
     voiceCombo = new QComboBox();
     for (const auto& v : voices) voiceCombo->addItem(v.name());
-    ttsLayout->addWidget(voiceCombo, 0, 1);
-    ttsLayout->addWidget(new QLabel("语速："), 1, 0);
+    ttsLayout->addWidget(voiceCombo, 1, 1, 1, 2);
+
+    qwenVoiceLabel = new QLabel("云端音色：");
+    ttsLayout->addWidget(qwenVoiceLabel, 2, 0);
+    qwenVoiceCombo = new QComboBox();
+    struct QwenVoice { const char* name; const char* param; const char* desc; };
+    static const QwenVoice qwenVoices[] = {
+        {"芊悦", "Cherry", "阳光积极、亲切自然小姐姐（女性）"},
+        {"苏瑶", "Serena", "温柔小姐姐（女性）"},
+        {"晨煦", "Ethan", "标准普通话，带部分北方口音。阳光、温暖、活力、朝气（男性）"},
+        {"千雪", "Chelsie", "二次元虚拟女友（女性）"},
+        {"茉兔", "Momo", "撒娇搞怪，逗你开心（女性）"},
+        {"十三", "Vivian", "拽拽的、可爱的小暴躁（女性）"},
+        {"月白", "Moon", "率性帅气的月白（男性）"},
+        {"四月", "Maia", "知性与温柔的碰撞（女性）"},
+        {"凯", "Kai", "耳朵的一场SPA（男性）"},
+        {"不吃鱼", "Nofish", "不会翘舌音的设计师（男性）"},
+        {"萌宝", "Bella", "喝酒不打醉拳的小萝莉（女性）"},
+        {"詹妮弗", "Jennifer", "品牌级、电影质感般美语女声（女性）"},
+        {"甜茶", "Ryan", "节奏拉满，戏感炸裂，真实与张力共舞（男性）"},
+        {"卡捷琳娜", "Katerina", "御姐音色，韵律回味十足（女性）"},
+        {"艾登", "Aiden", "精通厨艺的美语大男孩（男性）"},
+        {"沧明子", "Eldric Sage", "沉稳睿智的老者，沧桑如松却心明如镜（男性）"},
+        {"乖小妹", "Mia", "温顺如春水，乖巧如初雪（女性）"},
+        {"沙小弥", "Mochi", "聪明伶俐的小大人，童真未泯却早慧如禅（男性）"},
+        {"燕铮莺", "Bellona", "声音洪亮，吐字清晰，人物鲜活（女性）"},
+        {"田叔", "Vincent", "一口独特的沙哑烟嗓，道尽千军万马与江湖豪情（男性）"},
+        {"萌小姬", "Bunny", "\"萌属性\"爆棚的小萝莉（女性）"},
+        {"阿闻", "Neil", "平直的基线语调，字正腔圆的新闻主持人（男性）"},
+        {"墨讲师", "Elias", "学科严谨性与叙事技巧兼备（女性）"},
+        {"徐大爷", "Arthur", "被岁月和旱烟浸泡过的质朴嗓音（男性）"},
+        {"邻家妹妹", "Nini", "糯米糍一样又软又黏的嗓音（女性）"},
+        {"小婉", "Seren", "温和舒缓的声线，助你更快入眠（女性）"},
+        {"顽屁小孩", "Pip", "调皮捣蛋却充满童真（男性）"},
+        {"少女阿月", "Stella", "甜到发腻的迷糊少女音，正义感瞬间拉满（女性）"},
+        {"博德加", "Bodega", "热情的西班牙大叔（男性）"},
+        {"索尼莎", "Sonrisa", "热情开朗的拉美大姐（女性）"},
+        {"阿列克", "Alek", "战斗民族的冷与毛呢大衣下的暖（男性）"},
+        {"多尔切", "Dolce", "慵懒的意大利大叔（男性）"},
+        {"素熙", "Sohee", "温柔开朗，情绪丰富的韩国欧尼（女性）"},
+        {"小野杏", "Ono Anna", "鬼灵精怪的青梅竹马（女性）"},
+        {"莱恩", "Lenn", "理性为底色、叛逆藏细节的德国青年（男性）"},
+        {"埃米尔安", "Emilien", "浪漫的法国大哥哥（男性）"},
+        {"安德雷", "Andre", "声音磁性，自然舒服、沉稳男生（男性）"},
+        {"拉迪奥·戈尔", "Radio Gol", "足球诗人，为足球而生的解说（男性）"},
+        {"上海-阿珍", "Jada", "风风火火的沪上阿姐（女性）"},
+        {"北京-晓东", "Dylan", "北京胡同里长大的少年（男性）"},
+        {"南京-老李", "Li", "耐心的瑜伽老师（男性）"},
+        {"陕西-秦川", "Marcus", "面宽话短，心实声沉——老陕的味道（男性）"},
+        {"闽南-阿杰", "Roy", "诙谐直爽、市井活泼的台湾哥仔形象（男性）"},
+        {"天津-李彼得", "Peter", "天津相声，专业捧哏（男性）"},
+        {"四川-晴儿", "Sunny", "甜到你心里的川妹子（女性）"},
+        {"四川-程川", "Eric", "一个跳脱市井的四川成都男子（男性）"},
+        {"粤语-阿强", "Rocky", "幽默风趣的阿强，在线陪聊（男性）"},
+        {"粤语-阿清", "Kiki", "甜美的港妹闺蜜（女性）"},
+    };
+    for (const auto& v : qwenVoices) {
+        qwenVoiceCombo->addItem(QString::fromUtf8(v.name), QString::fromUtf8(v.param));
+        qwenVoiceCombo->setItemData(qwenVoiceCombo->count() - 1,
+                                    QString::fromUtf8(v.desc), Qt::ToolTipRole);
+    }
+    ttsLayout->addWidget(qwenVoiceCombo, 2, 1, 1, 2);
+
+    qwenKeyLabel = new QLabel("API Key：");
+    ttsLayout->addWidget(qwenKeyLabel, 3, 0);
+    apiKeyInput = new QLineEdit();
+    apiKeyInput->setEchoMode(QLineEdit::Password);
+    apiKeyInput->setPlaceholderText("阿里云百炼 DashScope API Key");
+    ttsLayout->addWidget(apiKeyInput, 3, 1, 1, 2);
+
+    ttsLayout->addWidget(new QLabel("语速："), 4, 0);
     rateSlider = new QSlider(Qt::Horizontal);
     rateSlider->setRange(0, 100);
     rateSlider->setValue(50);
     rateLabel = new QLabel("50");
     rateLabel->setFixedWidth(30);
-    ttsLayout->addWidget(rateSlider, 1, 1);
-    ttsLayout->addWidget(rateLabel, 1, 2);
+    ttsLayout->addWidget(rateSlider, 4, 1);
+    ttsLayout->addWidget(rateLabel, 4, 2);
     // 新增：音量
-    ttsLayout->addWidget(new QLabel("音量："), 2, 0);
+    ttsLayout->addWidget(new QLabel("音量："), 5, 0);
     volumeSlider = new QSlider(Qt::Horizontal);
     volumeSlider->setRange(0, 100);
     volumeSlider->setValue(50);
     volumeLabel = new QLabel("50");
     volumeLabel->setFixedWidth(30);
-    ttsLayout->addWidget(volumeSlider, 2, 1);
-    ttsLayout->addWidget(volumeLabel, 2, 2);
+    ttsLayout->addWidget(volumeSlider, 5, 1);
+    ttsLayout->addWidget(volumeLabel, 5, 2);
     layout->addWidget(ttsGroup);
 
     // 朗读模板
@@ -312,7 +489,7 @@ MainWindow::MainWindow(QWidget* parent)
     // ========== 底部版本信息 ==========
     QLabel* footer = new QLabel(
         "本程序仅供个人自用，用于主播本人监听自己直播间弹幕，请遵守相关法律法规，违者后果自负\n\n"
-        "版本：v0.2.0\n"
+        "版本：v0.4.0\n"
         "开发者：Byjsmc\n"
         "最后更新于：2026/09/05"
         );
@@ -343,6 +520,17 @@ MainWindow::MainWindow(QWidget* parent)
     connect(voiceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
         if (idx >= 0 && idx < voices.size()) tts->setVoice(voices[idx]);
     });
+    // 云端 TTS
+    connect(engineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &MainWindow::onEngineChanged);
+    connect(qwenVoiceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int idx) {
+        if (idx >= 0) qwenTts->setVoice(qwenVoiceCombo->itemData(idx).toString());
+    });
+    connect(apiKeyInput, &QLineEdit::editingFinished, this, [this]() {
+        qwenTts->setApiKey(apiKeyInput->text());
+    });
+    // 随机朗读
+    randomTimer->start();
     // 窗口设置
     connect(alwaysOnTopCheck, &QCheckBox::toggled, this, &MainWindow::onAlwaysOnTopToggled);
     connect(opacitySlider, &QSlider::valueChanged, this, &MainWindow::onOpacityChanged);
@@ -378,8 +566,10 @@ MainWindow::~MainWindow() {
     saveConfig();
     reconnectTimer->stop();
     ttsTimer->stop();
+    randomTimer->stop();
     gatewayWatchdogTimer->stop();
     if (webSocket->state() == QAbstractSocket::ConnectedState) webSocket->close();
+    qwenTts->stopAll();
     stopGateway();
 }
 
@@ -469,6 +659,9 @@ void MainWindow::onStateChanged(QTextToSpeech::State state) {
 /**
  * @brief 解析弹幕网关推送的 JSON 消息
  * Data 字段是嵌套的 JSON 字符串，需要二次解析
+ * 内层消息公共字段（DouyinBarrageGrab Msg 基类）：
+ *   WebRoomId(web直播间ID，稳定) / RoomId(场次号，每次开播变化)
+ *   RoomTitle / Owner{Nickname,SecUid,...}
  */
 void MainWindow::parseDanmu(const QString& json) {
     QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
@@ -487,6 +680,33 @@ void MainWindow::parseDanmu(const QString& json) {
         data = dataVal.toObject();
     }
 
+    // ========== 房间识别：新房间加入下拉框 ==========
+    QString webRoomId = data.value("WebRoomId").toString();
+    if (webRoomId.isEmpty()) webRoomId = data.value("WebRoomid").toString();
+    if (!webRoomId.isEmpty()) {
+        QString label;
+        QJsonObject owner = data.value("Owner").toObject();
+        if (owner.isEmpty()) owner = data.value("Onwer").toObject();   // 网关历史拼写
+        label = owner.value("Nickname").toString();
+        if (label.isEmpty()) label = data.value("RoomTitle").toString();
+        if (label.isEmpty()) label = webRoomId;
+        if (!roomNames.contains(webRoomId) || roomNames.value(webRoomId).isEmpty()) {
+            roomNames.insert(webRoomId, label);
+            log(QString("发现直播间: %1 (%2)").arg(label, webRoomId));
+            refreshRoomCombo(selectedRoomId());
+        }
+    }
+
+    // ========== 房间过滤 ==========
+    const QString selected = selectedRoomId();
+    if (!selected.isEmpty() && webRoomId != selected) return;
+
+    // 来源标注：发现了多个房间时才加前缀，避免单房间噪音
+    const QString sourcePrefix =
+        (roomNames.size() > 1 && !webRoomId.isEmpty())
+            ? QString("[%1] ").arg(roomNames.value(webRoomId, webRoomId))
+            : QString();
+
     // 提取用户昵称
     auto getNick = [&](const QJsonObject& d) -> QString {
         QJsonObject u = d.value("User").toObject();
@@ -501,7 +721,7 @@ void MainWindow::parseDanmu(const QString& json) {
         QString content = data.value("Content").toString().trimmed();
         if (content.isEmpty()) return;
 
-        danmuList->addItem(QString("%1: %2").arg(nickname).arg(content));
+        danmuList->addItem(sourcePrefix + QString("%1: %2").arg(nickname).arg(content));
         if (danmuList->count() > 80) danmuList->takeItem(0);
         danmuList->scrollToBottom();
 
@@ -524,7 +744,7 @@ void MainWindow::parseDanmu(const QString& json) {
         text.replace("%1", nickname);
         text.replace("%2", gift);
         text.replace("%3", QString::number(count));
-        danmuList->addItem(QString("[礼物] %1").arg(text));
+        danmuList->addItem(sourcePrefix + QString("[礼物] %1").arg(text));
 
         if (giftSwitch->isChecked()) {
             enqueueSpeak(text);
@@ -534,7 +754,7 @@ void MainWindow::parseDanmu(const QString& json) {
         QString nickname = getNick(data);
         if (nickname.isEmpty() || nickname == "某人") return;
 
-        danmuList->addItem(QString("[进房] %1 进入了直播间").arg(nickname));
+        danmuList->addItem(sourcePrefix + QString("[进房] %1 进入了直播间").arg(nickname));
         if (danmuList->count() > 80) danmuList->takeItem(0);
         danmuList->scrollToBottom();
 
@@ -546,6 +766,72 @@ void MainWindow::parseDanmu(const QString& json) {
 
 void MainWindow::speak(const QString& text) {
     tts->say(text);
+}
+
+// ==================== 引擎与房间辅助 ====================
+
+bool MainWindow::engineIsQwen() const {
+    return engineCombo && engineCombo->currentData().toString() == "qwen";
+}
+
+void MainWindow::updateEngineUi() {
+    const bool qwen = engineIsQwen();
+    voiceCombo->setVisible(!qwen);
+    systemVoiceLabel->setVisible(!qwen);
+    qwenVoiceCombo->setVisible(qwen);
+    qwenVoiceLabel->setVisible(qwen);
+    apiKeyInput->setVisible(qwen);
+    qwenKeyLabel->setVisible(qwen);
+}
+
+void MainWindow::onEngineChanged(int index) {
+    Q_UNUSED(index);
+    if (engineIsQwen()) {
+        if (tts->state() == QTextToSpeech::Speaking) tts->stop();
+        qwenTts->setApiKey(apiKeyInput->text());
+        if (qwenVoiceCombo->currentIndex() >= 0)
+            qwenTts->setVoice(qwenVoiceCombo->itemData(qwenVoiceCombo->currentIndex()).toString());
+        if (apiKeyInput->text().trimmed().isEmpty())
+            log("⚠️ 使用千问 TTS 需要先填写阿里云百炼 DashScope API Key");
+    } else {
+        qwenTts->stopAll();
+    }
+    updateEngineUi();
+}
+
+QString MainWindow::selectedRoomId() const {
+    if (!roomCombo || roomCombo->currentIndex() < 0) return QString();
+    return roomCombo->currentData().toString();
+}
+
+QString MainWindow::roomLabelFor(const QString& webRoomId) const {
+    return roomNames.value(webRoomId, webRoomId);
+}
+
+void MainWindow::refreshRoomCombo(const QString& keepId) {
+    QString want = keepId;
+    if (want.isEmpty()) want = selectedRoomId();
+
+    const QSignalBlocker blocker(roomCombo);
+    roomCombo->clear();
+    roomCombo->addItem("全部房间", QString());
+
+    // 按名称排序展示
+    QList<QPair<QString, QString>> rooms;   // label, id
+    for (auto it = roomNames.constBegin(); it != roomNames.constEnd(); ++it)
+        rooms.append({it.value(), it.key()});
+    std::sort(rooms.begin(), rooms.end(), [](const QPair<QString, QString>& a,
+                                             const QPair<QString, QString>& b) {
+        return a.first < b.first;
+    });
+    for (const auto& r : rooms)
+        roomCombo->addItem(r.first, r.second);
+
+    if (!want.isEmpty() && roomCombo->findData(want) < 0)
+        roomCombo->addItem(want, want);   // 已保存但尚未发现的房间先按 ID 占位
+
+    int idx = roomCombo->findData(want);
+    roomCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 }
 
 void MainWindow::log(const QString& msg) {

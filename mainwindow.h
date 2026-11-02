@@ -11,6 +11,8 @@
 #include <QComboBox>
 #include <QSlider>
 #include <QTextEdit>
+#include <QPlainTextEdit>
+#include <QSpinBox>
 #include <QGroupBox>
 #include <QCheckBox>
 #include <QJsonDocument>
@@ -25,6 +27,9 @@
 #include <QQueue>
 #include <QTimer>
 #include <QSettings>
+#include <QMap>
+
+#include "qwenttsclient.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -42,10 +47,12 @@ private slots:
     void onWebSocketError(QAbstractSocket::SocketError error);
     void onStateChanged(QTextToSpeech::State state);
     void onTtsTimerTimeout();
+    void onRandomTimerTimeout();
     void onReconnectTimerTimeout();
     void onGatewayWatchdogTimeout();
     void onAlwaysOnTopToggled(bool checked);
     void onOpacityChanged(int value);
+    void onEngineChanged(int index);
     void saveConfig();
     void loadConfig();
 
@@ -55,13 +62,23 @@ private:
     QPushButton* connectBtn;
     QPushButton* disconnectBtn;
     QListWidget* danmuList;
+    QComboBox* roomCombo;
+    QComboBox* engineCombo;
     QComboBox* voiceCombo;
+    QComboBox* qwenVoiceCombo;
+    QLineEdit* apiKeyInput;
+    QLabel* systemVoiceLabel;
+    QLabel* qwenVoiceLabel;
+    QLabel* qwenKeyLabel;
     QSlider* rateSlider;
     QLabel* rateLabel;
     QTextEdit* logView;
     QCheckBox* danmuSwitch;
     QCheckBox* giftSwitch;
     QCheckBox* enterSwitch;
+    QCheckBox* randomSwitch;
+    QSpinBox* randomIntervalSpin;
+    QPlainTextEdit* randomTextEdit;
     QSlider* volumeSlider;
     QLabel* volumeLabel;
     QCheckBox* alwaysOnTopCheck;
@@ -73,10 +90,14 @@ private:
     // 弹幕
     QWebSocket* webSocket;
     bool connected;
+    QMap<QString, QString> roomNames;   // WebRoomId -> 展示名（主播昵称/房间标题）
 
     // TTS
     QTextToSpeech* tts;
     QVector<QVoice> voices;
+    QwenTtsClient* qwenTts;
+    QDateTime lastSpeakTime;
+    QTimer* randomTimer;
 
     QProcess* gatewayProcess;
     QQueue<QString> ttsQueue;
@@ -93,6 +114,11 @@ private:
     void speak(const QString& text);
     void enqueueSpeak(const QString& text);
     void parseDanmu(const QString& json);
+    QString roomLabelFor(const QString& webRoomId) const;
+    void refreshRoomCombo(const QString& keepId);
+    QString selectedRoomId() const;
+    bool engineIsQwen() const;
+    void updateEngineUi();
 
     bool ensureGatewayRunning();
     void startGateway();
