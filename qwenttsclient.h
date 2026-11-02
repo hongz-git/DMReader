@@ -7,6 +7,8 @@
 #include <QAudio>
 #include <QAudioFormat>
 #include <QIODevice>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <QTimer>
 #include <QQueue>
 #include <QJsonObject>
@@ -51,18 +53,24 @@ private slots:
     void onConnected();
     void onTextMessageReceived(const QString& message);
     void onBinaryMessageReceived(const QByteArray& message);
+    void onHttpReplyFinished();
+    void onAudioDownloaded();
     void onDisconnected();
     void onErrorOccurred();
     void onPumpTimerTimeout();             // 定时把积压 PCM 写入音频设备
 
 private:
-    bool isRealtimeProtocol() const;
+    bool isRealtimeProtocol() const;       // qwen3-tts-*-realtime（session 协议）
+    bool isTaskProtocol() const;           // qwen-audio-*-tts-*（run-task 协议）
+    bool isHttpProtocol() const;           // qwen3-tts-flash 等非实时 HTTP 模型
     void connectToService();
     void sendJson(const QJsonObject& obj);
     void sendSessionUpdate();              // realtime 系：会话参数
     void sendRunTask();                    // audio-tts 系：开始任务
     void sendContinueTask(const QString& text);
     void sendFinishTask();
+    void startHttpRequest(const QString& text);   // http 系：提交合成
+    void abortHttp();
     void trySpeakNext();
     void openAudio();
     void closeAudio();
@@ -84,6 +92,10 @@ private:
     QString taskId;                        // audio-tts 系当前任务 ID
     bool taskStarted = false;
 
+    QNetworkAccessManager* nam = nullptr;  // http 系合成请求
+    QNetworkReply* httpReply = nullptr;
+    QNetworkReply* downloadReply = nullptr;
+
     QQueue<QString> queue;                 // 待朗读队列（由外部串行调用，深度通常为 1）
     QString currentText;                   // 正在合成的文本
     bool connecting = false;
@@ -97,7 +109,8 @@ private:
     int targetChannels = 1;                // 设备实际支持的输出声道数
     QAudioFormat::SampleFormat targetSampleFormat = QAudioFormat::Int16;
 
-    QByteArray convertPcm(const QByteArray& pcm);   // API 输出格式 → 设备格式
+    QByteArray convertPcm(const QByteArray& pcm, int srcRate, int srcChannels,
+                          QAudioFormat::SampleFormat srcFormat);   // 源格式 → 设备格式
 };
 
 #endif // QWENTTSCLIENT_H

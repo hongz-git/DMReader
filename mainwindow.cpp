@@ -411,8 +411,9 @@ MainWindow::MainWindow(QWidget* parent)
     ttsLayout->addWidget(qwenModelLabel, 2, 0);
     modelCombo = new QComboBox();
     modelCombo->addItem("千问3 TTS Flash（实时）", "qwen3-tts-flash-realtime");
+    modelCombo->addItem("千问3 TTS Flash（标准）", "qwen3-tts-flash");
     modelCombo->addItem("Qwen-Audio 3.0 TTS Plus", "qwen-audio-3.0-tts-plus");
-    modelCombo->setToolTip("音色与模型绑定，切换模型后音色列表随之变化");
+    modelCombo->setToolTip("音色与模型绑定，切换模型后音色列表随之变化；标准版按次合成，延迟略高");
     ttsLayout->addWidget(modelCombo, 2, 1, 1, 2);
 
     qwenVoiceLabel = new QLabel("云端音色：");
@@ -486,7 +487,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.3");
+    QLabel* footer = new QLabel("版本：v0.5.4");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
@@ -796,7 +797,7 @@ void MainWindow::rebuildQwenVoices(const QString& model) {
     const QSignalBlocker blocker(qwenVoiceCombo);
     qwenVoiceCombo->clear();
 
-    if (model == QLatin1String("qwen-audio-3.0-tts-plus")) {
+    if (model.startsWith(QLatin1String("qwen-audio"))) {
         // Qwen-Audio-3.0-TTS 专属龙安系列音色
         qwenVoiceCombo->addItem("龙安灵心", "longanlingxin");
         qwenVoiceCombo->setItemData(0, "知心温暖音 · 25岁 · 女", Qt::ToolTipRole);
