@@ -10,9 +10,9 @@
 #include <QLabel>
 #include <QComboBox>
 #include <QSlider>
-#include <QTextEdit>
 #include <QPlainTextEdit>
 #include <QSpinBox>
+#include <QColor>
 #include <QGroupBox>
 #include <QCheckBox>
 #include <QJsonDocument>
@@ -63,7 +63,7 @@ private:
     QLineEdit* urlInput;
     QPushButton* connectBtn;
     QPushButton* disconnectBtn;
-    QListWidget* danmuList;
+    QListWidget* danmuList;   // 合并展示弹幕与日志的记录视图
     QComboBox* roomCombo;
     QComboBox* engineCombo;
     QComboBox* voiceCombo;
@@ -74,7 +74,6 @@ private:
     QLabel* qwenKeyLabel;
     QSlider* rateSlider;
     QLabel* rateLabel;
-    QTextEdit* logView;
     QCheckBox* danmuSwitch;
     QCheckBox* giftSwitch;
     QCheckBox* enterSwitch;
@@ -115,6 +114,7 @@ private:
     QString enterTpl;
 
     void log(const QString& msg);
+    void appendRecordItem(const QString& text, const QColor& color);
     void speak(const QString& text);
     void enqueueSpeak(const QString& text);
     void parseDanmu(const QString& json);

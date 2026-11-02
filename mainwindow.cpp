@@ -508,25 +508,18 @@ MainWindow::MainWindow(QWidget* parent)
     leftLayout->addWidget(configTabs, 1);
     splitter->addWidget(leftPane);
 
-    // ---- 右侧：弹幕列表 + 日志 ----
+    // ---- 右侧：合并记录（弹幕 + 日志）----
     QWidget* rightPane = new QWidget();
     QVBoxLayout* rightLayout = new QVBoxLayout(rightPane);
     rightLayout->setContentsMargins(0, 0, 0, 0);
     rightLayout->setSpacing(8);
 
-    QGroupBox* listGroup = new QGroupBox("弹幕");
-    QVBoxLayout* listLayout = new QVBoxLayout(listGroup);
+    QGroupBox* recordGroup = new QGroupBox("记录（弹幕 / 日志）");
+    QVBoxLayout* recordLayout = new QVBoxLayout(recordGroup);
     danmuList = new QListWidget();
-    listLayout->addWidget(danmuList);
-    rightLayout->addWidget(listGroup, 3);
-
-    QGroupBox* logGroup = new QGroupBox("日志");
-    QVBoxLayout* logLayout = new QVBoxLayout(logGroup);
-    logView = new QTextEdit();
-    logView->setReadOnly(true);
-    logView->setMinimumHeight(90);
-    logLayout->addWidget(logView);
-    rightLayout->addWidget(logGroup, 1);
+    danmuList->setWordWrap(false);
+    recordLayout->addWidget(danmuList);
+    rightLayout->addWidget(recordGroup, 1);
 
     splitter->addWidget(rightPane);
     splitter->setStretchFactor(0, 6);
@@ -534,14 +527,9 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 6 << 4);
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel(
-        "本程序仅供个人自用，用于主播本人监听自己直播间弹幕，请遵守相关法律法规，违者后果自负\n\n"
-        "版本：v0.5.0\n"
-        "开发者：Byjsmc\n"
-        "最后更新于：2026/09/05"
-        );
+    QLabel* footer = new QLabel("版本：v0.5.1");
     footer->setStyleSheet("color: gray; font-size: 11px;");
-    footer->setWordWrap(true);
+    footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
 
     // ========== 信号连接 ==========
@@ -771,9 +759,7 @@ void MainWindow::parseDanmu(const QString& json) {
         QString content = data.value("Content").toString().trimmed();
         if (content.isEmpty()) return;
 
-        danmuList->addItem(sourcePrefix + QString("%1: %2").arg(nickname).arg(content));
-        if (danmuList->count() > 80) danmuList->takeItem(0);
-        danmuList->scrollToBottom();
+        appendRecordItem(sourcePrefix + QString("%1: %2").arg(nickname).arg(content), QColor());
 
         if (danmuSwitch->isChecked()) {
             QString text = danmuTpl;
@@ -794,7 +780,7 @@ void MainWindow::parseDanmu(const QString& json) {
         text.replace("%1", nickname);
         text.replace("%2", gift);
         text.replace("%3", QString::number(count));
-        danmuList->addItem(sourcePrefix + QString("[礼物] %1").arg(text));
+        appendRecordItem(sourcePrefix + QString("[礼物] %1").arg(text), QColor());
 
         if (giftSwitch->isChecked()) {
             enqueueSpeak(text);
@@ -804,9 +790,7 @@ void MainWindow::parseDanmu(const QString& json) {
         QString nickname = getNick(data);
         if (nickname.isEmpty() || nickname == "某人") return;
 
-        danmuList->addItem(sourcePrefix + QString("[进房] %1 进入了直播间").arg(nickname));
-        if (danmuList->count() > 80) danmuList->takeItem(0);
-        danmuList->scrollToBottom();
+        appendRecordItem(sourcePrefix + QString("[进房] %1 进入了直播间").arg(nickname), QColor());
 
         if (enterSwitch->isChecked()) {
             QString text = enterTpl;
@@ -886,8 +870,22 @@ void MainWindow::refreshRoomCombo(const QString& keepId) {
     roomCombo->setCurrentIndex(idx >= 0 ? idx : 0);
 }
 
+/**
+ * @brief 向合并记录视图追加一条消息并滚动到底部，超过上限丢弃最旧记录
+ */
+void MainWindow::appendRecordItem(const QString& text, const QColor& color) {
+    if (!danmuList) return;
+    QListWidgetItem* item = new QListWidgetItem(text);
+    if (color.isValid()) item->setForeground(color);
+    danmuList->addItem(item);
+    while (danmuList->count() > 300) {
+        QListWidgetItem* old = danmuList->takeItem(0);
+        delete old;
+    }
+    danmuList->scrollToBottom();
+}
+
 void MainWindow::log(const QString& msg) {
-    QString ts = QDateTime::currentDateTime().toString("HH:mm:ss");
-    logView->append(QString("[%1] %2").arg(ts).arg(msg));
-    logView->verticalScrollBar()->setValue(logView->verticalScrollBar()->maximum());
+    const QString ts = QDateTime::currentDateTime().toString("HH:mm:ss");
+    appendRecordItem(QString("[%1] %2").arg(ts).arg(msg), QColor(128, 128, 128));
 }

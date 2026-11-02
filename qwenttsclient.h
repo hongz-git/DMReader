@@ -80,6 +80,7 @@ private:
     QAudioFormat audioFormat;
     int targetRate = 24000;                // 设备实际支持的输出采样率（openAudio 时确定）
     int targetChannels = 1;                // 设备实际支持的输出声道数
+    QAudioFormat::SampleFormat targetSampleFormat = QAudioFormat::Int16;
 
     QByteArray convertPcm(const QByteArray& pcm);   // 24kHz/单声道 → 设备格式
 };

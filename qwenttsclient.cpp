@@ -9,6 +9,16 @@ static const char* kRealtimeUrl =
 static const int kSampleRate = 24000;   // 协议约定的 PCM 输出采样率
 static const int kMaxConnectFailures = 3;
 
+static int bytesPerSample(QAudioFormat::SampleFormat sf) {
+    switch (sf) {
+    case QAudioFormat::UInt8: return 1;
+    case QAudioFormat::Int32: return 4;
+    case QAudioFormat::Float: return 4;
+    case QAudioFormat::Int16:
+    default: return 2;
+    }
+}
+
 QwenTtsClient::QwenTtsClient(QObject* parent)
     : QObject(parent) {
     audioFormat.setSampleRate(kSampleRate);
@@ -220,69 +230,65 @@ void QwenTtsClient::openAudio() {
         return;
     }
 
-    // API 固定输出 24kHz/单声道 PCM，本地负责转换。
-    // 优先用设备首选格式（统一为 16bit），严格检查不过再按常见组合探测，
-    // 避免部分声卡/驱动拒绝 24kHz 或单声道格式导致无法播放。
-    QAudioFormat f = dev.preferredFormat();
-    f.setSampleFormat(QAudioFormat::Int16);
-    if (!dev.isFormatSupported(f)) {
-        bool ok = false;
-        const int rates[] = { 48000, 44100, 24000, 22050, 16000 };
-        const int channelCounts[] = { 2, 1 };
-        for (int ch : channelCounts) {
-            for (int r : rates) {
-                QAudioFormat t;
-                t.setSampleRate(r);
-                t.setChannelCount(ch);
-                t.setSampleFormat(QAudioFormat::Int16);
-                if (dev.isFormatSupported(t)) {
-                    f = t;
-                    ok = true;
-                    break;
-                }
-            }
-            if (ok) break;
-        }
-        if (!ok) {
-            emit failed(QStringLiteral("无法找到音频设备支持的输出格式"));
-            return;
+    // 设备首选格式（与系统混音格式一致）必然可打开。
+    // 注意 isFormatSupported 的严格检查在 WASAPI 共享模式下只认 Float 混音格式，
+    // 会把 Int16 等全部拒绝，因此不以其作为硬性依据；直接尝试打开，
+    // 首选格式失败再退回 Float/Int16 的常见组合。
+    QList<QAudioFormat> candidates;
+    const QAudioFormat preferred = dev.preferredFormat();
+    if (preferred.sampleRate() > 0 && preferred.channelCount() > 0
+            && preferred.sampleFormat() != QAudioFormat::Unknown) {
+        candidates.append(preferred);
+    }
+    for (int r : { 48000, 44100, 24000 }) {
+        for (int ch : { 2, 1 }) {
+            QAudioFormat f;
+            f.setSampleRate(r);
+            f.setChannelCount(ch);
+            f.setSampleFormat(QAudioFormat::Float);
+            candidates.append(f);
+            f.setSampleFormat(QAudioFormat::Int16);
+            candidates.append(f);
         }
     }
 
-    audioFormat = f;
-    targetRate = f.sampleRate();
-    targetChannels = f.channelCount();
-    sink = new QAudioSink(dev, audioFormat, this);
-    sink->setBufferSize(targetRate * targetChannels * 4 / 5);   // 0.4s 缓冲（16bit）
-    audioIo = sink->start();
-    if (!audioIo) {
-        emit failed(QStringLiteral("音频设备启动失败"));
-        closeAudio();
+    for (const QAudioFormat& f : candidates) {
+        audioFormat = f;
+        targetRate = f.sampleRate();
+        targetChannels = f.channelCount();
+        targetSampleFormat = f.sampleFormat();
+        sink = new QAudioSink(dev, audioFormat, this);
+        sink->setBufferSize(targetRate * targetChannels
+                            * bytesPerSample(targetSampleFormat) * 2 / 5);   // 0.4s 缓冲
+        audioIo = sink->start();
+        if (audioIo) return;   // 打开成功
+        closeAudio();          // 失败则尝试下一个候选格式
     }
+
+    emit failed(QStringLiteral("无法打开音频输出设备（已尝试多种输出格式）"));
 }
 
 /**
- * @brief 将 API 输出的 24kHz/单声道 Int16 PCM 转换为音频设备支持的格式
- * 线性插值重采样 + 单声道复制，语音场景质量足够
+ * @brief 将 API 输出的 24kHz/单声道 Int16 PCM 转换为音频设备输出格式
+ * 线性插值重采样 + 单声道复制 + 采样格式转换，语音场景质量足够
  */
 QByteArray QwenTtsClient::convertPcm(const QByteArray& pcm) {
     if (pcm.isEmpty()) return pcm;
-    if (targetRate == kSampleRate && targetChannels == 1) return pcm;
 
     const qint16* src = reinterpret_cast<const qint16*>(pcm.constData());
     const int srcN = pcm.size() / 2;
     if (srcN <= 0) return QByteArray();
 
-    // 1) 重采样 24kHz → targetRate（线性插值）
+    // 1) 重采样 24kHz → targetRate（线性插值），中间格式保持 Int16
     QByteArray mono;
     const qint16* monoData = src;
     int monoN = srcN;
     if (targetRate != kSampleRate) {
-        const int dstN = int((qint64)srcN * targetRate / kSampleRate);
-        if (dstN <= 0) return QByteArray();
-        mono.resize(dstN * 2);
+        monoN = int((qint64)srcN * targetRate / kSampleRate);
+        if (monoN <= 0) return QByteArray();
+        mono.resize(monoN * 2);
         qint16* dst = reinterpret_cast<qint16*>(mono.data());
-        for (int i = 0; i < dstN; ++i) {
+        for (int i = 0; i < monoN; ++i) {
             const double pos = double(i) * kSampleRate / targetRate;
             int i0 = int(pos);
             if (i0 > srcN - 1) i0 = srcN - 1;
@@ -292,18 +298,36 @@ QByteArray QwenTtsClient::convertPcm(const QByteArray& pcm) {
             dst[i] = static_cast<qint16>(int(qBound(-32768.0, s, 32767.0)));
         }
         monoData = reinterpret_cast<const qint16*>(mono.constData());
-        monoN = dstN;
     }
 
-    if (targetChannels == 1) return mono.isEmpty() ? pcm : mono;
+    // 2) 单声道 → 多声道复制 + 采样格式转换（一次遍历完成）
+    if (targetChannels == 1 && targetSampleFormat == QAudioFormat::Int16)
+        return mono.isEmpty() ? pcm : mono;
 
-    // 2) 单声道 → 多声道复制
+    const int bytesPer = bytesPerSample(targetSampleFormat);
     QByteArray out;
-    out.resize(monoN * 2 * targetChannels);
-    qint16* o = reinterpret_cast<qint16*>(out.data());
+    out.resize(monoN * targetChannels * bytesPer);
+    char* o = out.data();
     for (int i = 0; i < monoN; ++i) {
-        for (int c = 0; c < targetChannels; ++c)
-            o[i * targetChannels + c] = monoData[i];
+        const qint16 v = monoData[i];
+        for (int c = 0; c < targetChannels; ++c) {
+            char* p = o + (i * targetChannels + c) * bytesPer;
+            switch (targetSampleFormat) {
+            case QAudioFormat::UInt8:
+                *reinterpret_cast<uchar*>(p) = static_cast<uchar>((v >> 8) + 128);
+                break;
+            case QAudioFormat::Int32:
+                *reinterpret_cast<qint32*>(p) = qint32(v) << 16;
+                break;
+            case QAudioFormat::Float:
+                *reinterpret_cast<float*>(p) = float(v) / 32768.0f;
+                break;
+            case QAudioFormat::Int16:
+            default:
+                *reinterpret_cast<qint16*>(p) = v;
+                break;
+            }
+        }
     }
     return out;
 }
