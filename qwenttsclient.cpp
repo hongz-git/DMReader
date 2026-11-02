@@ -322,7 +322,7 @@ void QwenTtsClient::onHttpReplyFinished() {
     }
 
     // 下载音频文件（签名的 OSS 地址，无需鉴权头）
-    QNetworkRequest dlReq(QUrl(url));
+    QNetworkRequest dlReq{QUrl(url)};   // 花括号避免最令人困惑解析
     downloadReply = nam->get(dlReq);
     connect(downloadReply, &QNetworkReply::finished, this, &QwenTtsClient::onAudioDownloaded);
 }
