@@ -243,7 +243,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     // ========== 窗口基本设置 ==========
     setWindowTitle("抖音弹幕朗读助手");
-    resize(704, 780);
+    resize(704, 600);
 
     // ========== TTS 引擎初始化 ==========
     tts = new QTextToSpeech(this);
@@ -527,7 +527,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.1");
+    QLabel* footer = new QLabel("版本：v0.5.2");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
