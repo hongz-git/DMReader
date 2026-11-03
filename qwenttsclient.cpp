@@ -22,6 +22,24 @@ static int bytesPerSample(QAudioFormat::SampleFormat sf) {
 }
 
 /**
+ * @brief 组装服务端错误描述：message 优先，辅以 code，都为空则回退原始 JSON，
+ *        保证任何情况下日志里都能看到有效内容
+ */
+static QString formatTtsError(const QString& code, const QString& message, const QString& raw) {
+    QStringList parts;
+    const QString m = message.trimmed();
+    const QString c = code.trimmed();
+    if (!m.isEmpty()) parts << m;
+    if (!c.isEmpty() && c != m) parts << c;
+    if (parts.isEmpty()) {
+        const QString r = raw.trimmed();
+        parts << (r.isEmpty() ? QStringLiteral("(服务端未返回错误详情)")
+                              : (r.size() > 300 ? r.left(300) + QStringLiteral("…") : r));
+    }
+    return parts.join(QStringLiteral(" | "));
+}
+
+/**
  * @brief 解析标准 RIFF/WAVE 头，返回采样率、声道数、位深与 data 区块位置
  * 支持 PCM(1)/IEEE Float(3)/EXTENSIBLE(0xFFFE) 编码
  */
@@ -248,9 +266,12 @@ void QwenTtsClient::sendFinishTask() {
     header["action"] = QStringLiteral("finish-task");
     header["task_id"] = taskId;
     header["streaming"] = QStringLiteral("duplex");
+    QJsonObject input;
+    QJsonObject payload;
+    payload["input"] = input;   // 协议要求三个 action 都必须带 payload.input
     QJsonObject obj;
     obj["header"] = header;
-    obj["payload"] = QJsonObject();
+    obj["payload"] = payload;
     sendJson(obj);
 }
 
@@ -297,18 +318,22 @@ void QwenTtsClient::onHttpReplyFinished() {
         return;
     }
 
+    const QByteArray body = reply->readAll();
     QJsonParseError parseErr{};
-    const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll(), &parseErr);
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &parseErr);
     if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
-        emit failed(QStringLiteral("千问TTS响应解析失败"));
+        emit failed(QStringLiteral("千问TTS响应解析失败: %1")
+                        .arg(QString::fromUtf8(body.left(200))));
         currentText.clear();
         return;
     }
     const QJsonObject root = doc.object();
-    if (root.value("status_code").toInt() != 200) {
-        QString msg = root.value("message").toString();
-        if (msg.isEmpty()) msg = root.value("code").toString();
-        emit failed(QStringLiteral("千问TTS: %1").arg(msg));
+    const int statusCode = root.value("status_code").toInt();
+    if (statusCode != 200) {
+        const QString msg = formatTtsError(root.value("code").toString(),
+                                           root.value("message").toString(),
+                                           QString::fromUtf8(body));
+        emit failed(QStringLiteral("千问TTS(HTTP %1): %2").arg(statusCode).arg(msg));
         currentText.clear();
         return;
     }
@@ -447,9 +472,9 @@ void QwenTtsClient::onTextMessageReceived(const QString& message) {
         }
 
         if (event == "task-failed") {
-            QString msg = header.value("error_message").toString();
-            if (msg.isEmpty()) msg = header.value("error_code").toString();
-            if (msg.isEmpty()) msg = message.left(200);
+            const QString msg = formatTtsError(header.value("error_code").toString(),
+                                               header.value("error_message").toString(),
+                                               message);
             emit failed(QStringLiteral("千问TTS: %1").arg(msg));
             clearSession(false, QString());
             // 任务失败后重建连接，避免会话状态残留
@@ -488,8 +513,9 @@ void QwenTtsClient::onTextMessageReceived(const QString& message) {
 
     if (type == "error") {
         QJsonObject err = root.value("error").toObject();
-        QString msg = err.value("message").toString();
-        if (msg.isEmpty()) msg = message.left(200);
+        const QString msg = formatTtsError(err.value("code").toString(),
+                                           err.value("message").toString(),
+                                           message);
         emit failed(QStringLiteral("千问TTS: %1").arg(msg));
         clearSession(false, QString());
         // 服务端可能保留坏会话，主动断开，下次朗读时重建
