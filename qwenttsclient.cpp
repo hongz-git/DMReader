@@ -328,20 +328,15 @@ void QwenTtsClient::onHttpReplyFinished() {
         return;
     }
     const QJsonObject root = doc.object();
-    const int statusCode = root.value("status_code").toInt();
-    if (statusCode != 200) {
-        const QString msg = formatTtsError(root.value("code").toString(),
-                                           root.value("message").toString(),
-                                           QString::fromUtf8(body));
-        emit failed(QStringLiteral("千问TTS(HTTP %1): %2").arg(statusCode).arg(msg));
-        currentText.clear();
-        return;
-    }
 
+    // 以“是否返回音频地址”判断成败（status_code 在部分响应中类型/位置不稳定，不作依据）
     const QString url = root.value("output").toObject()
                             .value("audio").toObject().value("url").toString();
     if (url.isEmpty()) {
-        emit failed(QStringLiteral("千问TTS: 响应中缺少音频地址"));
+        const QString msg = formatTtsError(root.value("code").toString(),
+                                           root.value("message").toString(),
+                                           QString::fromUtf8(body));
+        emit failed(QStringLiteral("千问TTS: %1").arg(msg));
         currentText.clear();
         return;
     }

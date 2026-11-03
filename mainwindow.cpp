@@ -506,7 +506,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.6");
+    QLabel* footer = new QLabel("版本：v0.5.7");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
