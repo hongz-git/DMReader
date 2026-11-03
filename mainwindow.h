@@ -88,6 +88,8 @@ private:
     QCheckBox* alwaysOnTopCheck;
     QSlider* opacitySlider;
     QLabel* opacityLabel;
+    QCheckBox* nickTruncateCheck;
+    QSpinBox* nickTruncateSpin;
     QLineEdit* danmuTemplateInput;
     QLineEdit* giftTemplateInput;
     QLineEdit* enterTemplateInput;

@@ -178,6 +178,8 @@ void MainWindow::saveConfig() {
     settings.setValue("randomEnabled", randomSwitch->isChecked());
     settings.setValue("randomInterval", randomIntervalSpin->value());
     settings.setValue("randomText", randomTextEdit->toPlainText());
+    settings.setValue("nickTruncateEnabled", nickTruncateCheck->isChecked());
+    settings.setValue("nickTruncateLength", nickTruncateSpin->value());
 }
 
 void MainWindow::loadConfig() {
@@ -204,6 +206,8 @@ void MainWindow::loadConfig() {
     randomSwitch->setChecked(settings.value("randomEnabled", false).toBool());
     randomIntervalSpin->setValue(settings.value("randomInterval", 60).toInt());
     randomTextEdit->setPlainText(settings.value("randomText", "").toString());
+    nickTruncateCheck->setChecked(settings.value("nickTruncateEnabled", false).toBool());
+    nickTruncateSpin->setValue(settings.value("nickTruncateLength", 2).toInt());
     apiKeyInput->setText(settings.value("apiKey", "").toString());
 
     // 云端模型与音色恢复（音色按 voice 参数名保存，跨模型安全）
@@ -446,6 +450,21 @@ MainWindow::MainWindow(QWidget* parent)
     volumeLabel->setFixedWidth(30);
     ttsLayout->addWidget(volumeSlider, 6, 1);
     ttsLayout->addWidget(volumeLabel, 6, 2);
+
+    // 昵称朗读：只读前 N 个字
+    ttsLayout->addWidget(new QLabel("昵称朗读："), 7, 0);
+    QWidget* nickRow = new QWidget();
+    QHBoxLayout* nickLayout = new QHBoxLayout(nickRow);
+    nickLayout->setContentsMargins(0, 0, 0, 0);
+    nickTruncateCheck = new QCheckBox("只读前");
+    nickTruncateSpin = new QSpinBox();
+    nickTruncateSpin->setRange(1, 12);
+    nickTruncateSpin->setValue(2);
+    nickTruncateSpin->setSuffix(" 字");
+    nickLayout->addWidget(nickTruncateCheck);
+    nickLayout->addWidget(nickTruncateSpin);
+    nickLayout->addStretch();
+    ttsLayout->addWidget(nickRow, 7, 1, 1, 2);
     settingsTabLayout->addWidget(ttsGroup);
 
     // 窗口设置
@@ -487,7 +506,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.5");
+    QLabel* footer = new QLabel("版本：v0.5.6");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
@@ -716,6 +735,18 @@ void MainWindow::parseDanmu(const QString& json) {
         return nick.isEmpty() ? "某人" : nick;
     };
 
+    // 朗读用昵称：可配置只读前 N 个字（避免长昵称/ID 刷屏拖慢 TTS）
+    auto speechNick = [&](const QString& nick) -> QString {
+        if (!nickTruncateCheck->isChecked()) return nick;
+        const int n = nickTruncateSpin->value();
+        if (nick.size() <= n) return nick;
+        QString cut = nick.left(n);
+        // 避免截断 emoji 等代理对产生半个字符
+        if (!cut.isEmpty() && cut.at(cut.size() - 1).isHighSurrogate())
+            cut.chop(1);
+        return cut.isEmpty() ? nick : cut;
+    };
+
     if (type == 1) {  // 弹幕
         QString nickname = getNick(data);
         QString content = data.value("Content").toString().trimmed();
@@ -725,7 +756,7 @@ void MainWindow::parseDanmu(const QString& json) {
 
         if (danmuSwitch->isChecked()) {
             QString text = danmuTpl;
-            text.replace("%1", nickname);
+            text.replace("%1", speechNick(nickname));
             text.replace("%2", content);
             enqueueSpeak(text);
         }
@@ -739,7 +770,7 @@ void MainWindow::parseDanmu(const QString& json) {
         if (count == 0) count = 1;
 
         QString text = giftTpl;
-        text.replace("%1", nickname);
+        text.replace("%1", speechNick(nickname));
         text.replace("%2", gift);
         text.replace("%3", QString::number(count));
         appendRecordItem(sourcePrefix + QString("[礼物] %1").arg(text), QColor());
@@ -756,7 +787,7 @@ void MainWindow::parseDanmu(const QString& json) {
 
         if (enterSwitch->isChecked()) {
             QString text = enterTpl;
-            text.replace("%1", nickname);
+            text.replace("%1", speechNick(nickname));
             enqueueSpeak(text);
         }
     }
