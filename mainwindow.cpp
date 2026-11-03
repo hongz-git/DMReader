@@ -252,7 +252,7 @@ MainWindow::MainWindow(QWidget* parent)
     waitingForGateway(false), reconnectAttempts(0), manualDisconnect(false) {
 
     // ========== 窗口基本设置 ==========
-    setWindowTitle("抖音弹幕朗读助手");
+    setWindowTitle("DMReader");
     resize(704, 600);
 
     // ========== TTS 引擎初始化 ==========
@@ -292,7 +292,7 @@ MainWindow::MainWindow(QWidget* parent)
     layout->setContentsMargins(12, 10, 12, 10);
 
     // ========== 标题 ==========
-    QLabel* title = new QLabel("🎙️ 抖音弹幕朗读助手");
+    QLabel* title = new QLabel("🎙️ DMReader");
     title->setStyleSheet("font-size: 20px; font-weight: bold; color: #5b8def;");
     title->setAlignment(Qt::AlignCenter);
     layout->addWidget(title);
@@ -506,7 +506,7 @@ MainWindow::MainWindow(QWidget* parent)
     splitter->setSizes(QList<int>() << 408 << 272);   // 左 408px / 右 272px
 
     // ========== 底部版本信息 ==========
-    QLabel* footer = new QLabel("版本：v0.5.7");
+    QLabel* footer = new QLabel("版本：v0.5.8");
     footer->setStyleSheet("color: gray; font-size: 11px;");
     footer->setAlignment(Qt::AlignCenter);
     layout->addWidget(footer);
